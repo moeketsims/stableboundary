@@ -570,6 +570,104 @@ def test_reflected_beta_truncation_mass_can_be_subnormal() -> None:
     assert result.p_truncation_mass == exp(result.p_log_truncation_mass)
 
 
+def test_reflected_subnormal_beta_public_summaries_use_stable_u_coordinate() -> None:
+    design = LocalDesign.from_sample_size(64)
+    prior = LocalPrior(
+        design=design,
+        h_min=0.25,
+        h_max=4.0,
+        p_min=1.0 - 1.2e-5,
+        p_max=1.0 - 1e-5,
+    )
+    result = fit_limiting_approximation(
+        _counts(design, negative=design.n, positive=0), design, prior
+    )
+    distribution = result._p_distribution()
+    assert isinstance(
+        distribution, approximation_module._ReflectedContinuousDistribution
+    )
+
+    u_lower = 1.0 - prior.p_max
+    u_upper = 1.0 - prior.p_min
+    shape = int(result.p_shape_negative)
+    expected_mean = 1.0 - _truncated_power_mean(
+        shape,
+        u_lower,
+        u_upper,
+    )
+    expected_quantiles = tuple(
+        1.0
+        - _truncated_power_quantile(
+            1.0 - probability,
+            shape,
+            u_lower,
+            u_upper,
+        )
+        for probability in (0.05, 0.5, 0.95)
+    )
+
+    p_summary = result.parameter_summary("p")
+    beta_summary = result.parameter_summary("beta")
+    p_values = (
+        p_summary.credible_interval.lower,
+        p_summary.median,
+        p_summary.credible_interval.upper,
+    )
+    assert p_summary.mean == pytest.approx(expected_mean, abs=1e-10)
+    assert p_values == pytest.approx(expected_quantiles, abs=1e-10)
+    assert beta_summary.mean == pytest.approx(2.0 * expected_mean - 1.0, abs=1e-10)
+    assert (
+        beta_summary.credible_interval.lower,
+        beta_summary.median,
+        beta_summary.credible_interval.upper,
+    ) == pytest.approx(
+        tuple(2.0 * value - 1.0 for value in expected_quantiles), abs=1e-10
+    )
+
+    full_summary = result.summary()
+    assert full_summary["parameters"]["p"] == p_summary.to_dict()  # type: ignore[index]
+    assert full_summary["parameters"]["beta"] == beta_summary.to_dict()  # type: ignore[index]
+
+    positive_prior = LocalPrior(
+        design=design,
+        h_min=0.25,
+        h_max=4.0,
+        p_min=u_lower,
+        p_max=u_upper,
+    )
+    positive = fit_limiting_approximation(
+        _counts(design, negative=0, positive=design.n),
+        design,
+        positive_prior,
+    )._p_distribution()
+    assert result.p_log_truncation_mass == positive.log_truncation_mass
+    assert distribution.mean() + positive.mean() == pytest.approx(1.0, abs=1e-10)
+
+    for probability, value in zip((0.05, 0.5, 0.95), p_values, strict=True):
+        assert distribution.quantile(probability) == value
+        u_quantile = distribution.base.quantile(1.0 - probability)
+        assert distribution.base.cdf(u_quantile) == pytest.approx(
+            1.0 - probability,
+            abs=2e-11,
+        )
+        assert distribution.base.survival(u_quantile) == pytest.approx(
+            probability,
+            abs=2e-11,
+        )
+        assert value == pytest.approx(1.0 - positive.quantile(1.0 - probability))
+
+        cdf = distribution.cdf(value)
+        survival = distribution.survival(value)
+        assert cdf + survival == pytest.approx(1.0, abs=2e-11)
+        adjacent_cdfs = (
+            distribution.cdf(float(np.nextafter(value, -np.inf))),
+            distribution.cdf(float(np.nextafter(value, np.inf))),
+        )
+        cdf_ulp = max(abs(adjacent - cdf) for adjacent in adjacent_cdfs)
+        assert abs(cdf - probability) <= 0.5 * cdf_ulp + 2e-11
+        assert abs(survival - (1.0 - probability)) <= 0.5 * cdf_ulp + 2e-11
+
+
 def test_gamma_truncation_mass_can_be_subnormal() -> None:
     design = LocalDesign.from_sample_size(64)
     prior = LocalPrior(
