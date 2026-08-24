@@ -19,8 +19,11 @@ from stableboundary.design import KnownNuisance, LocalDesign, LocalPrior
 from stableboundary.posterior import (
     QuadratureConfig,
     _axis_quantile,
+    _common_grid_density,
     _CommonGrid,
+    _evaluate_grid,
     _joint_total_variation,
+    _tau_cdf,
     _tau_quantile,
     compute_exact_posterior,
 )
@@ -351,6 +354,82 @@ def test_exact_uniform_product_quantiles_use_continuous_pushforward() -> None:
     assert positive[1] != pytest.approx(negative[1])
 
 
+@pytest.mark.parametrize("interval_mass", [1.0 - 1e-12, 1.0 - 1e-14])
+def test_public_fit_resolves_extreme_tau_tail_probabilities(
+    monkeypatch: pytest.MonkeyPatch,
+    interval_mass: float,
+) -> None:
+    monkeypatch.setattr(posterior_module, "ScipyS0Backend", _AnalyticBackend)
+    design = LocalDesign.from_sample_size(128)
+    prior = LocalPrior(design=design, p_min=1e-12, p_max=0.95)
+    controls = QuadratureConfig(interval_mass=interval_mass)
+    fit = fit_known_nuisance(
+        np.zeros(design.n),
+        loc=0.0,
+        scale=1.0,
+        design=design,
+        prior=prior,
+        provenance="independent calibration",
+        quadrature=controls,
+    )
+
+    tail = 0.5 * (1.0 - interval_mass)
+    p_summary = fit.posterior.summary_record("p")
+    assert p_summary.interval_lower > prior.p_min
+    assert p_summary.interval_lower == pytest.approx(
+        prior.p_min + tail * (prior.p_max - prior.p_min),
+        abs=np.spacing(prior.p_min),
+    )
+
+    tau_summary = fit.posterior.summary_record("tau_plus")
+    support_lower = design.r * prior.h_min * prior.p_min
+    assert tau_summary.interval_lower > support_lower
+    evaluation = _evaluate_grid(
+        fit.counts,
+        design,
+        prior,
+        controls.refined_nodes,
+        _AnalyticBackend(),
+    )
+    common = _common_grid_density(evaluation, prior, controls.common_grid_points)
+    p_widths = np.diff(common.p_axis)
+    prefix = np.zeros_like(common.density)
+    prefix[:, 1:] = np.cumsum(
+        0.5 * (common.density[:, :-1] + common.density[:, 1:]) * p_widths,
+        axis=1,
+    )
+    resolved_probability = _tau_cdf(
+        common,
+        design,
+        prefix,
+        prefix[:, -1],
+        tau_summary.interval_lower,
+        positive=True,
+    )
+    assert abs(resolved_probability - tail) <= 1e-9 * tail
+
+
+def test_public_fit_refuses_unrepresentable_extreme_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(posterior_module, "ScipyS0Backend", _AnalyticBackend)
+    design = LocalDesign.from_sample_size(128)
+    prior = LocalPrior(design=design, p_min=0.5, p_max=0.95)
+    tail = 0.5 * (1.0 - np.nextafter(1.0, 0.0))
+    with pytest.raises(ConvergenceError, match="not numerically resolvable"):
+        _axis_quantile(np.linspace(prior.p_min, prior.p_max, 65), np.ones(65), tail)
+    with pytest.raises(ConvergenceError, match="not numerically resolvable"):
+        fit_known_nuisance(
+            np.zeros(design.n),
+            loc=0.0,
+            scale=1.0,
+            design=design,
+            prior=prior,
+            provenance="independent calibration",
+            quadrature=QuadratureConfig(interval_mass=np.nextafter(1.0, 0.0)),
+        )
+
+
 def test_exact_too_tight_refinement_is_a_structured_failure() -> None:
     design = LocalDesign.from_sample_size(128)
     with pytest.raises(ConvergenceError, match="refinement failed"):
@@ -454,6 +533,8 @@ def test_fit_known_returns_finite_six_quantity_summary_and_json_audit(
         assert value["median"] == retained.median
         assert value["credible_interval"]["lower"] == retained.interval_lower
         assert value["credible_interval"]["upper"] == retained.interval_upper
+        assert retained.interval_lower < retained.median < retained.interval_upper
+    assert fit.posterior.interval_mass == 0.90
     encoded = json.dumps(fit.audit_record(), allow_nan=False)
     assert "research_uncertified" in encoded
     assert "independent calibration" in encoded
