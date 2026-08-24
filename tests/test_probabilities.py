@@ -207,6 +207,31 @@ def test_private_generator_uses_the_public_generator_type_without_private_import
     assert "scipy.stats._levy_stable" not in source
 
 
+@pytest.mark.parametrize("version", ["1.18", "1.18.0", "1.18.99", "1.18.1.dev0"])
+def test_scipy_compatibility_gate_accepts_only_the_audited_minor(
+    version: str,
+) -> None:
+    assert scipy_s0_module._require_supported_scipy(version) == version
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "1.17.9",
+        "1.19.0",
+        "2.0.0",
+        "1.18.bad",
+        "1.18.0garbage",
+        "development",
+        "",
+        None,
+    ],
+)
+def test_scipy_compatibility_gate_rejects_unaudited_versions(version: object) -> None:
+    with pytest.raises(RuntimeError, match="SciPy|version"):
+        scipy_s0_module._require_supported_scipy(version)
+
+
 def test_backend_reforces_every_private_setting_before_evaluation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

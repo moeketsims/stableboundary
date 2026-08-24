@@ -9,6 +9,7 @@ operation and retained in backend metadata.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from math import isfinite
@@ -28,6 +29,15 @@ from ._protocol import BackendMetadata, BackendResult, BackendSetting
 
 _SCIPY_LOCK = RLock()
 _QUAD_EPS: Final = 1.2e-14
+_SUPPORTED_SCIPY_MINOR: Final = (1, 18)
+_VERSION_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)"
+    r"(?:\.(?:0|[1-9]\d*))?"
+    r"(?:(?:a|b|rc)(?:0|[1-9]\d*))?"
+    r"(?:\.post(?:0|[1-9]\d*))?"
+    r"(?:\.dev(?:0|[1-9]\d*))?"
+    r"(?:\+[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*)?$"
+)
 _CANONICAL_SETTINGS: Final[tuple[tuple[str, BackendSetting], ...]] = (
     ("parameterization", "S0"),
     ("pdf_default_method", "piecewise"),
@@ -51,6 +61,22 @@ class _ScipyStableGenerator(Protocol):
     def logpdf(self, *args: object, **kwargs: object) -> object: ...
 
     def rvs(self, *args: object, **kwargs: object) -> object: ...
+
+
+def _require_supported_scipy(version: object) -> str:
+    """Fail closed outside the SciPy line audited for the private generator."""
+    if not isinstance(version, str) or not version.strip():
+        raise RuntimeError("SciPy must expose a nonempty version string")
+    match = _VERSION_PATTERN.fullmatch(version.strip())
+    if match is None:
+        raise RuntimeError(f"unparseable SciPy version: {version!r}")
+    release = (int(match.group("major")), int(match.group("minor")))
+    if release != _SUPPORTED_SCIPY_MINOR:
+        raise RuntimeError(
+            "stableboundary's isolated stable generator requires "
+            f"SciPy >=1.18,<1.19; found {version!r}"
+        )
+    return version.strip()
 
 
 def _new_private_generator() -> _ScipyStableGenerator:
@@ -83,6 +109,7 @@ def _new_private_generator() -> _ScipyStableGenerator:
     return cast(_ScipyStableGenerator, candidate)
 
 
+_SCIPY_VERSION: Final = _require_supported_scipy(scipy.__version__)
 _SCIPY_S0 = _new_private_generator()
 
 
@@ -137,7 +164,7 @@ class ScipyS0Backend:
         tolerance=_QUAD_EPS,
         parameterization="S0",
         library="scipy",
-        library_version=scipy.__version__,
+        library_version=_SCIPY_VERSION,
         effective_settings=_CANONICAL_SETTINGS,
     )
 
