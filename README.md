@@ -37,11 +37,48 @@ archive path to `python -m pip install`.
 ## Fixed-seed known-nuisance fit
 
 The executable example first fixes a design for `n=5000`, derives the simulated
-truth from that design, and only then simulates observations. It uses only the
-top-level `stableboundary` API:
+truth from that design, and only then simulates observations. The source
+distribution includes it as `examples/known_nuisance_fit.py`. From a source
+checkout or an unpacked source distribution, run:
 
 ```console
 python examples/known_nuisance_fit.py
+```
+
+Wheel users do not need repository-only modules. After installing a wheel, save
+the following as `quickstart.py` and run `python quickstart.py` from any working
+directory:
+
+```python
+import json
+
+import stableboundary as sb
+
+n = 5_000
+seed = 20_260_824
+design = sb.LocalDesign.from_sample_size(n)
+truth = sb.StableParams(
+    alpha=2.0 - design.r * 1.5,
+    beta=0.35,
+    loc=0.0,
+    scale=1.0,
+)
+observations = sb.simulate(truth, size=n, random_state=seed)
+fit = sb.fit_known_nuisance(
+    observations,
+    loc=0.0,
+    scale=1.0,
+    design=design,
+    prior=sb.LocalPrior.default(design),
+    provenance="fixed by the simulation design",
+    quadrature=sb.QuadratureConfig(
+        base_nodes=20,
+        refined_nodes=32,
+        refinement_tolerance=0.002,
+        common_grid_points=65,
+    ),
+)
+print(json.dumps(fit.summary(), indent=2, sort_keys=True))
 ```
 
 The output records `S0`, the fixed `loc` and `scale` with their provenance,
