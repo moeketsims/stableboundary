@@ -124,6 +124,16 @@ def test_backend_metadata_wraps_overflowing_real_conversions() -> None:
         )
 
 
+def test_backend_real_inputs_wrap_overflow_as_validation_errors() -> None:
+    with pytest.raises(ValidationError, match="loc"):
+        ScipyS0Backend().cdf(
+            0.0,
+            1.8,
+            0.0,
+            loc=Fraction(10**10_000, 1),  # type: ignore[arg-type]
+        )
+
+
 def test_backend_is_independent_of_hostile_public_scipy_state() -> None:
     backend = ScipyS0Backend()
     expected = (

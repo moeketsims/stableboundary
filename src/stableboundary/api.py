@@ -39,13 +39,18 @@ def fit_known_nuisance(
         selected_prior,
         quadrature,
     )
-    return KnownNuisanceFit._from_components(
-        nuisance=nuisance,
-        design=design,
-        prior=selected_prior,
-        counts=counts,
-        posterior=posterior,
-    )
+    # Keep result construction inside the fit that produced all components;
+    # the supported public result class exposes no rebinding factory.
+    result = object.__new__(KnownNuisanceFit)
+    object.__setattr__(result, "nuisance", nuisance)
+    object.__setattr__(result, "design", design)
+    object.__setattr__(result, "prior", selected_prior)
+    object.__setattr__(result, "counts", counts)
+    object.__setattr__(result, "posterior", posterior)
+    object.__setattr__(result, "status", "research_uncertified")
+    object.__setattr__(result, "method", "exact_finite_three_cell")
+    result.__post_init__()
+    return result
 
 
 __all__ = ["fit_known_nuisance"]

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from math import isfinite
 from numbers import Integral, Real
-from typing import Final, Literal, Self
+from typing import Final, Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -39,10 +39,17 @@ EvidenceStatus = Literal[
 PrecisionStatus = Literal["unidentified", "not_assessed"]
 
 
-def _probability(name: str, value: float) -> float:
+def _real_float(name: str, value: float) -> float:
     if isinstance(value, bool) or not isinstance(value, Real):
         raise ValidationError(f"{name} must be a real number")
-    result = float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValidationError(f"{name} must be a finite real number") from error
+
+
+def _probability(name: str, value: float) -> float:
+    result = _real_float(name, value)
     if not isfinite(result) or not 0.0 < result < 1.0:
         raise ValidationError(f"{name} must lie strictly inside (0, 1)")
     return result
@@ -67,9 +74,7 @@ def _seed(value: int) -> int:
 
 
 def _threshold(value: float) -> float:
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValidationError("threshold must be a real number")
-    result = float(value)
+    result = _real_float("threshold", value)
     if not isfinite(result) or result <= 0.0:
         raise ValidationError("threshold must be finite and strictly positive")
     return result
@@ -84,8 +89,8 @@ class CredibleInterval:
     mass: float
 
     def __post_init__(self) -> None:
-        lower = float(self.lower)
-        upper = float(self.upper)
+        lower = _real_float("lower", self.lower)
+        upper = _real_float("upper", self.upper)
         mass = _probability("mass", self.mass)
         if not isfinite(lower) or not isfinite(upper) or lower > upper:
             raise NumericalProbabilityError("credible interval endpoints are invalid")
@@ -287,31 +292,10 @@ class KnownNuisanceFit:
         default="exact_finite_three_cell", init=False
     )
 
-    def __init__(self) -> None:
+    def __init__(self, *args: object, **kwargs: object) -> None:
         """Prevent public composition of independently produced components."""
+        del args, kwargs
         raise TypeError("use stableboundary.fit_known_nuisance() to construct a fit")
-
-    @classmethod
-    def _from_components(
-        cls,
-        *,
-        nuisance: KnownNuisance,
-        design: LocalDesign,
-        prior: LocalPrior,
-        counts: CellCounts,
-        posterior: PosteriorGrid,
-    ) -> Self:
-        """Construct one fit after validating end-to-end provenance equality."""
-        result = object.__new__(cls)
-        object.__setattr__(result, "nuisance", nuisance)
-        object.__setattr__(result, "design", design)
-        object.__setattr__(result, "prior", prior)
-        object.__setattr__(result, "counts", counts)
-        object.__setattr__(result, "posterior", posterior)
-        object.__setattr__(result, "status", "research_uncertified")
-        object.__setattr__(result, "method", "exact_finite_three_cell")
-        result.__post_init__()
-        return result
 
     def __post_init__(self) -> None:
         if not isinstance(self.nuisance, KnownNuisance):
