@@ -99,7 +99,7 @@ class ScipyS0Backend:
     """Guarded bootstrap backend using SciPy's piecewise Nolan method."""
 
     _metadata: Final = BackendMetadata(
-        method="scipy-piecewise-s0",
+        method="scipy-piecewise-s0-direct-log-tails",
         tolerance=_QUAD_EPS,
     )
 
@@ -220,7 +220,18 @@ class ScipyS0Backend:
         loc: float = 0.0,
         scale: float = 1.0,
     ) -> BackendResult:
-        return self._evaluate("logcdf", x, alpha, beta, loc=loc, scale=scale)
+        probabilities = np.asarray(
+            self._evaluate("cdf", x, alpha, beta, loc=loc, scale=scale),
+            dtype=np.float64,
+        )
+        if np.any(probabilities <= 0.0):
+            raise NumericalProbabilityError(
+                "SciPy stable cdf underflowed before direct logarithm"
+            )
+        values = np.log(probabilities)
+        if values.ndim == 0:
+            return float(values)
+        return cast(NDArray[np.float64], values)
 
     def logsf(
         self,
@@ -231,7 +242,18 @@ class ScipyS0Backend:
         loc: float = 0.0,
         scale: float = 1.0,
     ) -> BackendResult:
-        return self._evaluate("logsf", x, alpha, beta, loc=loc, scale=scale)
+        probabilities = np.asarray(
+            self._evaluate("sf", x, alpha, beta, loc=loc, scale=scale),
+            dtype=np.float64,
+        )
+        if np.any(probabilities <= 0.0):
+            raise NumericalProbabilityError(
+                "SciPy stable sf underflowed before direct logarithm"
+            )
+        values = np.log(probabilities)
+        if values.ndim == 0:
+            return float(values)
+        return cast(NDArray[np.float64], values)
 
     def rvs(
         self,

@@ -81,7 +81,7 @@ def test_backend_is_runtime_checkable_and_metadata_is_immutable() -> None:
     backend = ScipyS0Backend()
     assert isinstance(backend, StableBackend)
     assert backend.metadata == BackendMetadata(
-        method="scipy-piecewise-s0",
+        method="scipy-piecewise-s0-direct-log-tails",
         tolerance=1.2e-14,
         parameterization="S0",
     )
@@ -141,34 +141,46 @@ def test_backend_finite_reference_log_values_and_broadcasting() -> None:
     assert np.all(np.isfinite(values))
 
 
-@pytest.mark.parametrize(
-    ("method_name", "scipy_name"),
-    [("sf", "sf"), ("logsf", "logsf")],
-)
+@pytest.mark.parametrize("method_name", ["sf", "logsf"])
 def test_positive_tail_backend_calls_direct_survival_method(
     monkeypatch: pytest.MonkeyPatch,
     method_name: str,
-    scipy_name: str,
 ) -> None:
     backend = ScipyS0Backend()
-    calls = {"sf": 0, "logsf": 0, "cdf": 0}
+    calls = {"sf": 0, "cdf": 0}
 
     def direct_tail(*args: object, **kwargs: object) -> float:
         del args, kwargs
-        calls[scipy_name] += 1
-        return -3.0 if scipy_name == "logsf" else np.exp(-3.0)
+        calls["sf"] += 1
+        return np.exp(-3.0)
 
     def forbidden_cdf(*args: object, **kwargs: object) -> float:
         del args, kwargs
         calls["cdf"] += 1
         raise AssertionError("positive tails must not call cdf")
 
-    monkeypatch.setattr(levy_stable, scipy_name, direct_tail)
+    monkeypatch.setattr(levy_stable, "sf", direct_tail)
     monkeypatch.setattr(levy_stable, "cdf", forbidden_cdf)
     result = getattr(backend, method_name)(3.0, 1.8, 0.2)
     assert np.isfinite(result)
-    assert calls[scipy_name] == 1
+    assert calls["sf"] == 1
     assert calls["cdf"] == 0
+
+
+def test_logcdf_uses_direct_cdf_then_checked_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = ScipyS0Backend()
+    calls = {"cdf": 0}
+
+    def direct_cdf(*args: object, **kwargs: object) -> float:
+        del args, kwargs
+        calls["cdf"] += 1
+        return np.exp(-4.0)
+
+    monkeypatch.setattr(levy_stable, "cdf", direct_cdf)
+    assert backend.logcdf(-3.0, 1.8, 0.2) == pytest.approx(-4.0)
+    assert calls["cdf"] == 1
 
 
 @pytest.mark.parametrize(
