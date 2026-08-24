@@ -28,7 +28,7 @@ See: `.planning/PROJECT.md` (updated 2026-08-24)
 Phase: 1 (Working Theorem-Faithful Package) — EXECUTING
 Plan: 4 of 4
 Status: Ready to execute
-Last activity: 2026-08-24
+Last activity: 2026-08-24 - Completed quick task 260824-t4d: Stabilize affine posterior refinement mean diagnostics without widening scientific tolerances
 
 Progress: [████████░░] 75%
 
@@ -74,6 +74,12 @@ None yet.
 - Phase 4: The finite-sample posterior-discrepancy bound and conservative numerical enclosure are unproved research dependencies; failure stops the certification claim.
 - Phase 5-6: The four-parameter workflow has a sound likelihood outline but no validated bin design or production posterior engine yet.
 - Phase 9: No scientifically qualified empirical dataset has been selected.
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Status | Directory |
+|---|-------------|------|--------|--------|-----------|
+| 260824-t4d | Stabilize affine posterior refinement mean diagnostics without widening scientific tolerances | 2026-08-24 | 5f73f90 | Verified | [260824-t4d-stabilize-affine-posterior-refinement-me](./quick/260824-t4d-stabilize-affine-posterior-refinement-me/) |
 
 ## Deferred Items
 
