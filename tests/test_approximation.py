@@ -668,6 +668,66 @@ def test_reflected_subnormal_beta_public_summaries_use_stable_u_coordinate() -> 
         assert abs(survival - (1.0 - probability)) <= 0.5 * cdf_ulp + 2e-11
 
 
+def test_reflected_beta_quantiles_choose_nearest_representable_p() -> None:
+    design = LocalDesign.from_sample_size(64)
+    epsilon = 2.0**-53
+    prior = LocalPrior(
+        design=design,
+        h_min=0.25,
+        h_max=4.0,
+        p_min=1.0 - 3.0 * epsilon,
+        p_max=1.0 - 2.0 * epsilon,
+    )
+    result = fit_limiting_approximation(
+        _counts(design, negative=design.n, positive=0), design, prior
+    )
+    distribution = result._p_distribution()
+    assert isinstance(
+        distribution, approximation_module._ReflectedContinuousDistribution
+    )
+
+    p_summary = result.parameter_summary("p")
+    beta_summary = result.parameter_summary("beta")
+    p_values = (
+        p_summary.credible_interval.lower,
+        p_summary.median,
+        p_summary.credible_interval.upper,
+    )
+    assert p_values == (prior.p_min, prior.p_min, prior.p_max)
+    assert p_summary.credible_interval.lower < p_summary.credible_interval.upper
+    assert (
+        beta_summary.credible_interval.lower,
+        beta_summary.median,
+        beta_summary.credible_interval.upper,
+    ) == tuple(2.0 * value - 1.0 for value in p_values)
+    assert beta_summary.credible_interval.lower < beta_summary.credible_interval.upper
+
+    full_summary = result.summary()
+    assert full_summary["parameters"]["p"] == p_summary.to_dict()  # type: ignore[index]
+    assert full_summary["parameters"]["beta"] == beta_summary.to_dict()  # type: ignore[index]
+
+    for probability, value in zip((0.05, 0.5, 0.95), p_values, strict=True):
+        mapped = 1.0 - distribution.base.quantile(1.0 - probability)
+        candidates = tuple(
+            candidate
+            for candidate in (
+                mapped,
+                float(np.nextafter(mapped, -np.inf)),
+                float(np.nextafter(mapped, np.inf)),
+            )
+            if prior.p_min <= candidate <= prior.p_max
+        )
+        residual = abs(distribution.cdf(value) - probability)
+        assert residual == min(
+            abs(distribution.cdf(candidate) - probability) for candidate in candidates
+        )
+        assert value in candidates
+        assert distribution.cdf(value) + distribution.survival(value) == 1.0
+
+    assert 1.0 - distribution.base.quantile(0.05) == prior.p_min
+    assert p_summary.credible_interval.upper == prior.p_max
+
+
 def test_gamma_truncation_mass_can_be_subnormal() -> None:
     design = LocalDesign.from_sample_size(64)
     prior = LocalPrior(
@@ -909,6 +969,62 @@ def test_concentrated_product_quantiles_match_uniformized_reference() -> None:
         assert actual == pytest.approx(expected, abs=1e-9)
 
 
+def test_reflected_tau_minus_product_summary_matches_tau_plus_mirror() -> None:
+    design = LocalDesign.from_sample_size(128)
+    right_prior = LocalPrior(
+        design=design,
+        h_min=0.25,
+        h_max=4.0,
+        p_min=1.0 - 2e-6,
+        p_max=1.0 - 1e-6,
+    )
+    mirror_prior = LocalPrior(
+        design=design,
+        h_min=0.25,
+        h_max=4.0,
+        p_min=1.0 - right_prior.p_max,
+        p_max=1.0 - right_prior.p_min,
+    )
+    right = fit_limiting_approximation(
+        _counts(design, negative=96, positive=16),
+        design,
+        right_prior,
+    )
+    mirror = fit_limiting_approximation(
+        _counts(design, negative=16, positive=96),
+        design,
+        mirror_prior,
+    )
+
+    right_summary = right.parameter_summary("tau_minus")
+    mirror_summary = mirror.parameter_summary("tau_plus")
+    assert right_summary == mirror_summary
+    assert right_summary.credible_interval.upper == pytest.approx(
+        1.0229889796630452e-6,
+        abs=1e-15,
+    )
+
+    quantile = right_summary.credible_interval.upper
+    h_distribution = right._h_distribution()
+    p_distribution = right._p_distribution()
+    conditioned_on_h = approximation_module._product_cdf_condition_on_h(
+        quantile,
+        h_distribution,
+        p_distribution,
+        design.r,
+        positive=False,
+    )
+    conditioned_on_p = approximation_module._product_cdf_condition_on_p(
+        quantile,
+        h_distribution,
+        p_distribution,
+        design.r,
+        positive=False,
+    )
+    assert conditioned_on_h == pytest.approx(0.95, abs=1e-9)
+    assert conditioned_on_p == pytest.approx(0.95, abs=1e-9)
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize("n", [40_000, 75_000, 100_000])
 def test_large_concentrated_product_summaries_pass_independent_cdf_checks(
@@ -1024,6 +1140,52 @@ def test_product_quantile_requires_independent_final_cdf_check(
             0.5,
             positive=True,
         )
+
+
+def test_product_quantile_retries_independent_route_for_one_failed_evaluation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    design = LocalDesign.from_sample_size(64)
+    result = fit_limiting_approximation(_counts(design, negative=1, positive=2), design)
+    h_distribution = result._h_distribution()
+    p_distribution = result._p_distribution()
+    condition_on_h = approximation_module._product_cdf_condition_on_h
+    failed_once = False
+
+    def fail_once(*args: object, **kwargs: object) -> float:
+        nonlocal failed_once
+        if not failed_once:
+            failed_once = True
+            raise NumericalProbabilityError("forced primary-route failure")
+        return condition_on_h(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        approximation_module,
+        "_product_cdf_condition_on_h",
+        fail_once,
+    )
+    quantile = approximation_module._product_quantile(
+        h_distribution,
+        p_distribution,
+        design.r,
+        0.5,
+        positive=True,
+    )
+    assert failed_once
+    assert condition_on_h(
+        quantile,
+        h_distribution,
+        p_distribution,
+        design.r,
+        positive=True,
+    ) == pytest.approx(0.5, abs=1e-9)
+    assert approximation_module._product_cdf_condition_on_p(
+        quantile,
+        h_distribution,
+        p_distribution,
+        design.r,
+        positive=True,
+    ) == pytest.approx(0.5, abs=1e-9)
 
 
 def test_limiting_fit_is_controlled_and_exposes_no_misleading_fixed_grid() -> None:

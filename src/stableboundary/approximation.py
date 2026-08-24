@@ -395,7 +395,39 @@ class _ReflectedContinuousDistribution:
         # Validate both probability tails before reflecting.  Near p=1, a single
         # binary64 p-ULP can span more than the CDF residual tolerance even though
         # the u-coordinate quantile itself is fully resolved.
-        return 1.0 - self.base.quantile(1.0 - probability)
+        if probability <= 0.0:
+            return self.lower
+        if probability >= 1.0:
+            return self.upper
+        mapped = min(
+            self.upper,
+            max(self.lower, 1.0 - self.base.quantile(1.0 - probability)),
+        )
+        candidates = tuple(
+            dict.fromkeys(
+                candidate
+                for candidate in (
+                    mapped,
+                    float(np.nextafter(mapped, -np.inf)),
+                    float(np.nextafter(mapped, np.inf)),
+                )
+                if self.lower <= candidate <= self.upper
+            )
+        )
+        cdf_values = tuple(self.cdf(candidate) for candidate in candidates)
+        evaluated = tuple(
+            (abs(cdf - probability), index, candidate)
+            for index, (candidate, cdf) in enumerate(
+                zip(candidates, cdf_values, strict=True)
+            )
+        )
+        residual, _, result = min(evaluated)
+        one_ulp_probability_span = max(cdf_values) - min(cdf_values)
+        if residual > 0.5 * one_ulp_probability_span + _CDF_ROUNDOFF_TOLERANCE:
+            raise NumericalProbabilityError(
+                "reflected limiting-posterior quantile exceeds its p-ULP CDF bound"
+            )
+        return result
 
     def mean(self) -> float:
         return 1.0 - self.base.mean()
@@ -425,8 +457,21 @@ def _product_cdf_condition_on_h(
     positive: bool,
 ) -> float:
     """Evaluate a product CDF by conditioning on ``H``."""
-    allocation_lower = p_distribution.lower if positive else 1.0 - p_distribution.upper
-    allocation_upper = p_distribution.upper if positive else 1.0 - p_distribution.lower
+    reflected_distribution = (
+        p_distribution
+        if not positive and isinstance(p_distribution, _ReflectedContinuousDistribution)
+        else None
+    )
+    if reflected_distribution is not None:
+        allocation_lower = reflected_distribution.base.lower
+        allocation_upper = reflected_distribution.base.upper
+    else:
+        allocation_lower = (
+            p_distribution.lower if positive else 1.0 - p_distribution.upper
+        )
+        allocation_upper = (
+            p_distribution.upper if positive else 1.0 - p_distribution.lower
+        )
     lower = r * h_distribution.lower * allocation_lower
     upper = r * h_distribution.upper * allocation_upper
     if value <= lower:
@@ -436,6 +481,8 @@ def _product_cdf_condition_on_h(
 
     def conditional_probability(h: float) -> float:
         allocation = value / (r * h)
+        if reflected_distribution is not None:
+            return reflected_distribution.base.cdf(allocation)
         if positive:
             return p_distribution.cdf(allocation)
         return p_distribution.survival(1.0 - allocation)
@@ -456,8 +503,21 @@ def _product_cdf_condition_on_p(
     positive: bool,
 ) -> float:
     """Independently evaluate a product CDF by conditioning on ``P``."""
-    allocation_lower = p_distribution.lower if positive else 1.0 - p_distribution.upper
-    allocation_upper = p_distribution.upper if positive else 1.0 - p_distribution.lower
+    reflected_distribution = (
+        p_distribution
+        if not positive and isinstance(p_distribution, _ReflectedContinuousDistribution)
+        else None
+    )
+    if reflected_distribution is not None:
+        allocation_lower = reflected_distribution.base.lower
+        allocation_upper = reflected_distribution.base.upper
+    else:
+        allocation_lower = (
+            p_distribution.lower if positive else 1.0 - p_distribution.upper
+        )
+        allocation_upper = (
+            p_distribution.upper if positive else 1.0 - p_distribution.lower
+        )
     lower = r * h_distribution.lower * allocation_lower
     upper = r * h_distribution.upper * allocation_upper
     if value <= lower:
@@ -468,6 +528,16 @@ def _product_cdf_condition_on_p(
     def conditional_probability(p: float) -> float:
         allocation = p if positive else 1.0 - p
         return h_distribution.cdf(value / (r * allocation))
+
+    if reflected_distribution is not None:
+        breakpoints = tuple(
+            value / (r * h_bound)
+            for h_bound in (h_distribution.lower, h_distribution.upper)
+        )
+        return reflected_distribution.base.expectation(
+            lambda allocation: h_distribution.cdf(value / (r * allocation)),
+            breakpoints,
+        )
 
     breakpoints = tuple(
         (value / (r * h_bound) if positive else 1.0 - value / (r * h_bound))
@@ -485,8 +555,16 @@ def _product_quantile(
     positive: bool,
 ) -> float:
     """Invert the continuous CDF of ``r*H*P`` or ``r*H*(1-P)``."""
-    allocation_lower = p_distribution.lower if positive else 1.0 - p_distribution.upper
-    allocation_upper = p_distribution.upper if positive else 1.0 - p_distribution.lower
+    if not positive and isinstance(p_distribution, _ReflectedContinuousDistribution):
+        allocation_lower = p_distribution.base.lower
+        allocation_upper = p_distribution.base.upper
+    else:
+        allocation_lower = (
+            p_distribution.lower if positive else 1.0 - p_distribution.upper
+        )
+        allocation_upper = (
+            p_distribution.upper if positive else 1.0 - p_distribution.lower
+        )
     lower = r * h_distribution.lower * allocation_lower
     upper = r * h_distribution.upper * allocation_upper
     if probability <= 0.0:
@@ -494,37 +572,55 @@ def _product_quantile(
     if probability >= 1.0:
         return upper
 
-    primary_cdf = (
-        _product_cdf_condition_on_h if positive else _product_cdf_condition_on_p
+    condition_on_h = _product_cdf_condition_on_h
+    condition_on_p = _product_cdf_condition_on_p
+    use_h_primary = positive or isinstance(
+        p_distribution, _ReflectedContinuousDistribution
     )
-    independent_cdf = (
-        _product_cdf_condition_on_p if positive else _product_cdf_condition_on_h
+    primary_cdf, fallback_cdf = (
+        (condition_on_h, condition_on_p)
+        if use_h_primary
+        else (condition_on_p, condition_on_h)
     )
+
+    def inversion_probability(value: float) -> float:
+        route_failure: Exception | None = None
+        for inversion_cdf in (primary_cdf, fallback_cdf):
+            try:
+                return inversion_cdf(
+                    value,
+                    h_distribution,
+                    p_distribution,
+                    r,
+                    positive=positive,
+                )
+            except (
+                NumericalProbabilityError,
+                FloatingPointError,
+                OverflowError,
+                ValueError,
+            ) as cause:
+                route_failure = cause
+        raise NumericalProbabilityError(
+            "continuous product CDF failed on both conditioning routes"
+        ) from route_failure
+
     root = brentq(
-        lambda value: (
-            primary_cdf(
-                value,
-                h_distribution,
-                p_distribution,
-                r,
-                positive=positive,
-            )
-            - probability
-        ),
+        lambda value: inversion_probability(value) - probability,
         lower,
         upper,
         xtol=max(np.finfo(np.float64).tiny, 2e-14 * (upper - lower)),
         rtol=8.0 * np.finfo(np.float64).eps,
     )
     result = float(root)
-    direct_probability = primary_cdf(
+    direct_probability = condition_on_h(
         result,
         h_distribution,
         p_distribution,
         r,
         positive=positive,
     )
-    independent_probability = independent_cdf(
+    independent_probability = condition_on_p(
         result,
         h_distribution,
         p_distribution,
@@ -838,7 +934,8 @@ class LimitingApproximationFit:
             return h_mean
         if quantity == "alpha":
             return 2.0 - self.design.r * h_mean
-        p_mean = self._p_distribution().mean()
+        p_distribution = self._p_distribution()
+        p_mean = p_distribution.mean()
         if quantity == "p":
             return p_mean
         if quantity == "beta":
@@ -846,7 +943,12 @@ class LimitingApproximationFit:
         if quantity == "tau_plus":
             return self.design.r * h_mean * p_mean
         if quantity == "tau_minus":
-            return self.design.r * h_mean * (1.0 - p_mean)
+            negative_allocation_mean = (
+                p_distribution.base.mean()
+                if isinstance(p_distribution, _ReflectedContinuousDistribution)
+                else 1.0 - p_mean
+            )
+            return self.design.r * h_mean * negative_allocation_mean
         raise ValidationError(f"unknown approximation quantity: {quantity!r}")
 
     def parameter_summary(self, quantity: str) -> ParameterSummary:
