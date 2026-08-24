@@ -136,7 +136,9 @@ def _inspect_archives(wheel: Path, sdist: Path) -> None:
 
 def _venv_python(environment: Path) -> Path:
     relative = Path("Scripts/python.exe") if os.name == "nt" else Path("bin/python")
-    executable = (environment / relative).resolve()
+    # Do not resolve the POSIX venv launcher: it is normally a symlink to the
+    # base interpreter, and resolving it bypasses the adjacent pyvenv.cfg.
+    executable = environment / relative
     if not executable.is_file():
         raise RuntimeError(f"virtual-environment interpreter is missing: {executable}")
     return executable

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import copy
 import io
+import os
 import subprocess
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
@@ -12,6 +14,20 @@ from pathlib import Path
 import pytest
 
 from scripts import smoke_wheel
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX venv launchers are symlinks")
+def test_venv_python_preserves_posix_launcher_symlink(tmp_path: Path) -> None:
+    environment = tmp_path / "venv"
+    executable = environment / "bin" / "python"
+    executable.parent.mkdir(parents=True)
+    executable.symlink_to(Path(sys.executable))
+
+    selected = smoke_wheel._venv_python(environment)
+
+    assert selected == executable
+    assert selected.is_symlink()
+    assert selected.resolve() != selected
 
 
 def _valid_summary(quantity: str) -> dict[str, object]:
