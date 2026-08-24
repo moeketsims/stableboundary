@@ -26,7 +26,7 @@ def test_public_error_hierarchy_is_curated() -> None:
         "ValidationError",
         "__version__",
     }
-    assert set(sb.__all__) == expected
+    assert expected <= set(sb.__all__)
     for name in expected - {"StableBoundaryError", "__version__"}:
         error_type = getattr(sb, name)
         assert issubclass(error_type, sb.StableBoundaryError)

@@ -16,6 +16,7 @@ from ._exceptions import (
     UnidentifiedParameterError,
     ValidationError,
 )
+from .parameters import LocalCoordinates, SignedTailGap, StableParams
 
 try:
     __version__ = version("stableboundary")
@@ -25,8 +26,11 @@ except PackageNotFoundError:  # pragma: no cover - supports an uninstalled sourc
 __all__ = [
     "ConvergenceError",
     "InfiniteMomentError",
+    "LocalCoordinates",
     "NumericalProbabilityError",
+    "SignedTailGap",
     "StableBoundaryError",
+    "StableParams",
     "UnidentifiedParameterError",
     "ValidationError",
     "__version__",
