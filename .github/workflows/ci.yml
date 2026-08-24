@@ -108,7 +108,7 @@ jobs:
       - name: Independent oracle regeneration check
         run: >-
           uv run --frozen coverage run --branch
-          --source=stableboundary,scripts --append
+          --source=scripts --append
           scripts/generate_artifact_oracle.py
           --check scripts/artifact_oracle.json
       - name: Enforce package and verifier branch coverage floors

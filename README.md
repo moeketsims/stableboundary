@@ -128,7 +128,7 @@ uv run --frozen ruff check .
 uv run --frozen ruff format --check .
 uv run --frozen mypy
 uv run --frozen coverage run --branch --source=stableboundary,scripts -m pytest -q -m "not installed"
-uv run --frozen coverage run --branch --source=stableboundary,scripts --append scripts/generate_artifact_oracle.py --check scripts/artifact_oracle.json
+uv run --frozen coverage run --branch --source=scripts --append scripts/generate_artifact_oracle.py --check scripts/artifact_oracle.json
 uv run --frozen coverage report --include="src/stableboundary/*" --fail-under=80
 uv run --frozen coverage report --include="scripts/*" --fail-under=80
 uv run --frozen python -m build --no-isolation
