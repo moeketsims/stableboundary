@@ -41,6 +41,8 @@ def run_example() -> dict[str, Any]:
     summary = fit.summary()
     audit = fit.audit_record()
     return {
+        "schema_version": audit["schema_version"],
+        "package_version": audit["package_version"],
         "status": summary["status"],
         "method": summary["method"],
         "parameterization": summary["parameterization"],
@@ -53,11 +55,14 @@ def run_example() -> dict[str, Any]:
             "scale": truth.scale,
         },
         "design": audit["design"],
-        "counts": summary["counts"],
+        "prior": audit["prior"],
+        "counts": audit["counts"],
+        "quadrature": audit["quadrature"],
         "parameters": summary["parameters"],
         "posterior_mass": float(fit.posterior.mass.sum()),
         "identification": summary["identification"],
         "refinement": audit["refinement"],
+        "backend": audit["backend"],
         "warnings": summary["warnings"],
     }
 

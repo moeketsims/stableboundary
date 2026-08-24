@@ -34,6 +34,7 @@ dev = [
 include = [
   "/LICENSE",
   "/README.md",
+  "/examples/known_nuisance_fit.py",
   "/pyproject.toml",
   "/src/stableboundary",
   "/uv.lock",
