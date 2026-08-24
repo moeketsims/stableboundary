@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from math import isfinite, log
+from math import exp, isfinite, log
 from numbers import Real
 from typing import Final, Literal
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.integrate import quad  # type: ignore[import-untyped]
+from scipy.optimize import brentq  # type: ignore[import-untyped]
 from scipy.special import (  # type: ignore[import-untyped]
+    betainc,
+    betaincc,
     betaln,
+    gammainc,
+    gammaincc,
     gammaln,
     logsumexp,
     roots_legendre,
@@ -23,6 +30,9 @@ from .result import CredibleInterval, ParameterSummary
 
 _NODES: Final = 96
 _INTERVAL_MASS: Final = 0.90
+_QUADRATURE_RELATIVE_TOLERANCE: Final = 2e-12
+_QUADRATURE_LIMIT: Final = 200
+_CDF_ROUNDOFF_TOLERANCE: Final = 2e-11
 _QUANTITIES: Final = (
     "h",
     "p",
@@ -73,14 +83,267 @@ def _normalized_mass(
     return mass, log_normalizer
 
 
-def _weighted_quantile(
-    values: NDArray[np.float64],
-    mass: NDArray[np.float64],
-    probability: float,
+def _positive_interval_difference(
+    lower_cdf: float,
+    upper_cdf: float,
+    lower_survival: float,
+    upper_survival: float,
+) -> float | None:
+    """Choose the less cancellation-prone representation of interval mass."""
+    candidates: list[tuple[float, float]] = []
+    for high, low in (
+        (upper_cdf, lower_cdf),
+        (lower_survival, upper_survival),
+    ):
+        difference = high - low
+        scale = max(abs(high), abs(low), np.finfo(np.float64).tiny)
+        if isfinite(difference) and difference > 0.0:
+            candidates.append((difference / scale, difference))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda candidate: candidate[0])[1]
+
+
+def _integral(
+    integrand: Callable[[float], float],
+    lower: float,
+    upper: float,
+    *,
+    points: Sequence[float] = (),
 ) -> float:
-    order = np.argsort(values.ravel(), kind="stable")
-    cumulative = np.cumsum(mass.ravel()[order])
-    return float(np.interp(probability, cumulative, values.ravel()[order]))
+    """Evaluate a nonnegative one-dimensional integral with explicit checks."""
+    if lower >= upper:
+        return 0.0
+    internal_points = sorted({point for point in points if lower < point < upper})
+    value, error = quad(
+        integrand,
+        lower,
+        upper,
+        epsabs=0.0,
+        epsrel=_QUADRATURE_RELATIVE_TOLERANCE,
+        limit=_QUADRATURE_LIMIT,
+        points=internal_points or None,
+    )
+    result = float(value)
+    estimated_error = float(error)
+    tolerance = max(
+        np.finfo(np.float64).tiny,
+        _CDF_ROUNDOFF_TOLERANCE * abs(result),
+    )
+    if not isfinite(result) or not isfinite(estimated_error) or result < -tolerance:
+        raise NumericalProbabilityError(
+            "continuous limiting-posterior integration failed"
+        )
+    return max(0.0, result)
+
+
+@dataclass(frozen=True, slots=True)
+class _TruncatedContinuousDistribution:
+    """A continuously normalized one-dimensional law on compact support."""
+
+    lower: float
+    upper: float
+    peak: float
+    log_kernel: Callable[[float], float]
+    base_cdf: Callable[[float], float]
+    base_survival: Callable[[float], float]
+    _peak_log_kernel: float = field(init=False, repr=False)
+    _scaled_normalizer: float = field(init=False, repr=False)
+    _base_interval_mass: float | None = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        peak = min(self.upper, max(self.lower, self.peak))
+        peak_log_kernel = float(self.log_kernel(peak))
+        if (
+            not isfinite(self.lower)
+            or not isfinite(self.upper)
+            or self.lower >= self.upper
+            or not isfinite(peak_log_kernel)
+        ):
+            raise NumericalProbabilityError(
+                "continuous limiting-posterior support is invalid"
+            )
+        object.__setattr__(self, "peak", peak)
+        object.__setattr__(self, "_peak_log_kernel", peak_log_kernel)
+        normalizer = _integral(
+            self._scaled_density,
+            self.lower,
+            self.upper,
+            points=(peak,),
+        )
+        if not isfinite(normalizer) or normalizer <= 0.0:
+            raise NumericalProbabilityError(
+                "continuous limiting-posterior normalization is nonpositive"
+            )
+        object.__setattr__(self, "_scaled_normalizer", normalizer)
+        object.__setattr__(
+            self,
+            "_base_interval_mass",
+            self._base_mass(self.lower, self.upper),
+        )
+
+    def _scaled_density(self, value: float) -> float:
+        if value < self.lower or value > self.upper:
+            return 0.0
+        log_value = float(self.log_kernel(value)) - self._peak_log_kernel
+        if not isfinite(log_value):
+            raise NumericalProbabilityError(
+                "continuous limiting-posterior density is nonfinite"
+            )
+        return exp(min(0.0, log_value))
+
+    def _base_mass(self, lower: float, upper: float) -> float | None:
+        return _positive_interval_difference(
+            float(self.base_cdf(lower)),
+            float(self.base_cdf(upper)),
+            float(self.base_survival(lower)),
+            float(self.base_survival(upper)),
+        )
+
+    def _adaptive_probability(self, value: float, *, lower_tail: bool) -> float:
+        lower_mass = _integral(
+            self._scaled_density,
+            self.lower,
+            value,
+            points=(self.peak,),
+        )
+        upper_mass = _integral(
+            self._scaled_density,
+            value,
+            self.upper,
+            points=(self.peak,),
+        )
+        total = lower_mass + upper_mass
+        if not isfinite(total) or total <= 0.0:
+            raise NumericalProbabilityError(
+                "continuous limiting-posterior CDF failed normalization"
+            )
+        return (lower_mass if lower_tail else upper_mass) / total
+
+    def cdf(self, value: float) -> float:
+        if value <= self.lower:
+            return 0.0
+        if value >= self.upper:
+            return 1.0
+        numerator = self._base_mass(self.lower, value)
+        denominator = self._base_interval_mass
+        if numerator is None or denominator is None or denominator <= 0.0:
+            probability = self._adaptive_probability(value, lower_tail=True)
+        else:
+            probability = numerator / denominator
+        if (
+            not isfinite(probability)
+            or probability < -_CDF_ROUNDOFF_TOLERANCE
+            or probability > 1.0 + _CDF_ROUNDOFF_TOLERANCE
+        ):
+            raise NumericalProbabilityError(
+                "continuous limiting-posterior CDF is outside [0, 1]"
+            )
+        return min(1.0, max(0.0, probability))
+
+    def survival(self, value: float) -> float:
+        if value <= self.lower:
+            return 1.0
+        if value >= self.upper:
+            return 0.0
+        numerator = self._base_mass(value, self.upper)
+        denominator = self._base_interval_mass
+        if numerator is None or denominator is None or denominator <= 0.0:
+            probability = self._adaptive_probability(value, lower_tail=False)
+        else:
+            probability = numerator / denominator
+        if (
+            not isfinite(probability)
+            or probability < -_CDF_ROUNDOFF_TOLERANCE
+            or probability > 1.0 + _CDF_ROUNDOFF_TOLERANCE
+        ):
+            raise NumericalProbabilityError(
+                "continuous limiting-posterior survival function is outside [0, 1]"
+            )
+        return min(1.0, max(0.0, probability))
+
+    def quantile(self, probability: float) -> float:
+        if probability <= 0.0:
+            return self.lower
+        if probability >= 1.0:
+            return self.upper
+        width = self.upper - self.lower
+        root = brentq(
+            lambda value: self.cdf(value) - probability,
+            self.lower,
+            self.upper,
+            xtol=max(np.finfo(np.float64).tiny, 1e-13 * width),
+            rtol=8.0 * np.finfo(np.float64).eps,
+        )
+        return float(root)
+
+    def expectation(
+        self,
+        function: Callable[[float], float],
+        points: Sequence[float],
+    ) -> float:
+        numerator = _integral(
+            lambda value: self._scaled_density(value) * function(value),
+            self.lower,
+            self.upper,
+            points=(self.peak, *points),
+        )
+        probability = numerator / self._scaled_normalizer
+        if (
+            not isfinite(probability)
+            or probability < -_CDF_ROUNDOFF_TOLERANCE
+            or probability > 1.0 + _CDF_ROUNDOFF_TOLERANCE
+        ):
+            raise NumericalProbabilityError(
+                "continuous product-distribution CDF is outside [0, 1]"
+            )
+        return min(1.0, max(0.0, probability))
+
+
+def _product_quantile(
+    h_distribution: _TruncatedContinuousDistribution,
+    p_distribution: _TruncatedContinuousDistribution,
+    r: float,
+    probability: float,
+    *,
+    positive: bool,
+) -> float:
+    """Invert the continuous CDF of ``r*H*P`` or ``r*H*(1-P)``."""
+    allocation_lower = p_distribution.lower if positive else 1.0 - p_distribution.upper
+    allocation_upper = p_distribution.upper if positive else 1.0 - p_distribution.lower
+    lower = r * h_distribution.lower * allocation_lower
+    upper = r * h_distribution.upper * allocation_upper
+    if probability <= 0.0:
+        return lower
+    if probability >= 1.0:
+        return upper
+
+    def product_cdf(value: float) -> float:
+        if value <= lower:
+            return 0.0
+        if value >= upper:
+            return 1.0
+
+        def conditional_probability(h: float) -> float:
+            allocation = value / (r * h)
+            if positive:
+                return p_distribution.cdf(allocation)
+            return p_distribution.survival(1.0 - allocation)
+
+        breakpoints = (
+            value / (r * allocation_lower),
+            value / (r * allocation_upper),
+        )
+        return h_distribution.expectation(conditional_probability, breakpoints)
+
+    root = brentq(
+        lambda value: product_cdf(value) - probability,
+        lower,
+        upper,
+        xtol=max(np.finfo(np.float64).tiny, 1e-12 * (upper - lower)),
+        rtol=8.0 * np.finfo(np.float64).eps,
+    )
+    return float(root)
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,15 +505,76 @@ class LimitingApproximationFit:
             return self.design.r * self.h_nodes * (1.0 - self.p_nodes)
         raise ValidationError(f"unknown approximation quantity: {quantity!r}")
 
+    def _h_distribution(self) -> _TruncatedContinuousDistribution:
+        shape = self.h_shape
+        rate = self.h_rate
+        mode = self.prior.h_min if shape <= 1.0 else (shape - 1.0) / rate
+        return _TruncatedContinuousDistribution(
+            lower=self.prior.h_min,
+            upper=self.prior.h_max,
+            peak=mode,
+            log_kernel=lambda value: (shape - 1.0) * log(value) - rate * value,
+            base_cdf=lambda value: float(gammainc(shape, rate * value)),
+            base_survival=lambda value: float(gammaincc(shape, rate * value)),
+        )
+
+    def _p_distribution(self) -> _TruncatedContinuousDistribution:
+        positive_shape = self.p_shape_positive
+        negative_shape = self.p_shape_negative
+        if positive_shape == 1.0 and negative_shape == 1.0:
+            mode = 0.5 * (self.prior.p_min + self.prior.p_max)
+        elif positive_shape == 1.0:
+            mode = self.prior.p_min
+        elif negative_shape == 1.0:
+            mode = self.prior.p_max
+        else:
+            mode = (positive_shape - 1.0) / (positive_shape + negative_shape - 2.0)
+        return _TruncatedContinuousDistribution(
+            lower=self.prior.p_min,
+            upper=self.prior.p_max,
+            peak=mode,
+            log_kernel=lambda value: (
+                (positive_shape - 1.0) * log(value)
+                + (negative_shape - 1.0) * np.log1p(-value)
+            ),
+            base_cdf=lambda value: float(
+                betainc(positive_shape, negative_shape, value)
+            ),
+            base_survival=lambda value: float(
+                betaincc(positive_shape, negative_shape, value)
+            ),
+        )
+
+    def _continuous_quantile(self, quantity: str, probability: float) -> float:
+        if quantity == "h":
+            return self._h_distribution().quantile(probability)
+        if quantity == "p":
+            return self._p_distribution().quantile(probability)
+        if quantity == "alpha":
+            return 2.0 - self.design.r * self._h_distribution().quantile(
+                1.0 - probability
+            )
+        if quantity == "beta":
+            return 2.0 * self._p_distribution().quantile(probability) - 1.0
+        if quantity in {"tau_plus", "tau_minus"}:
+            return _product_quantile(
+                self._h_distribution(),
+                self._p_distribution(),
+                self.design.r,
+                probability,
+                positive=quantity == "tau_plus",
+            )
+        raise ValidationError(f"unknown approximation quantity: {quantity!r}")
+
     def parameter_summary(self, quantity: str) -> ParameterSummary:
         values = self._values(quantity)
         tail = 0.5 * (1.0 - _INTERVAL_MASS)
         return ParameterSummary(
             mean=float(np.sum(self.mass * values)),
-            median=_weighted_quantile(values, self.mass, 0.5),
+            median=self._continuous_quantile(quantity, 0.5),
             credible_interval=CredibleInterval(
-                lower=_weighted_quantile(values, self.mass, tail),
-                upper=_weighted_quantile(values, self.mass, 1.0 - tail),
+                lower=self._continuous_quantile(quantity, tail),
+                upper=self._continuous_quantile(quantity, 1.0 - tail),
                 mass=_INTERVAL_MASS,
             ),
         )
