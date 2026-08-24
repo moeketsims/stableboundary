@@ -160,6 +160,125 @@ def test_exact_grid_is_normalized_read_only_and_reproducible() -> None:
         derived.setflags(write=True)
 
 
+def test_affine_mean_refinement_matches_primitive_coordinates_exactly() -> None:
+    design = LocalDesign.from_sample_size(128)
+    posterior = compute_exact_posterior(
+        _counts(design),
+        design,
+        LocalPrior.default(design),
+        backend=_AnalyticBackend(),
+    )
+    refinement = {
+        summary.quantity: summary for summary in posterior.refinement.summaries
+    }
+
+    assert refinement["alpha"].mean == refinement["h"].mean
+    assert refinement["beta"].mean == refinement["p"].mean
+
+
+@pytest.mark.parametrize("direction", ["forward", "reverse", "identical"])
+def test_affine_mean_refinement_survives_floating_point_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+    direction: str,
+) -> None:
+    design = LocalDesign.from_sample_size(128)
+    prior = LocalPrior.default(design)
+    config = QuadratureConfig(base_nodes=4, refined_nodes=6)
+    counts = _counts(design)
+    base = _evaluate_grid(counts, design, prior, config.base_nodes, _AnalyticBackend())
+    refined = _evaluate_grid(
+        counts,
+        design,
+        prior,
+        config.refined_nodes,
+        _AnalyticBackend(),
+    )
+
+    lower_h = prior.h_min
+    upper_h = float(np.nextafter(lower_h, np.inf))
+    lower_p = prior.p_min
+    upper_p = float(np.nextafter(lower_p, np.inf))
+    primitive_pairs = {
+        "forward": (lower_h, upper_h, lower_p, upper_p),
+        "reverse": (upper_h, lower_h, upper_p, lower_p),
+        "identical": (lower_h, lower_h, lower_p, lower_p),
+    }
+    base_h, refined_h, base_p, refined_p = primitive_pairs[direction]
+    base_alpha = 2.0 - design.r * base_h
+    refined_alpha = 2.0 - design.r * refined_h
+    base_beta = 2.0 * base_p - 1.0
+    refined_beta = 2.0 * refined_p - 1.0
+    assert base_alpha == refined_alpha
+    assert base_beta == refined_beta
+
+    def controlled_summaries(
+        *,
+        h_mean: float,
+        p_mean: float,
+        alpha_mean: float,
+        beta_mean: float,
+    ) -> tuple[posterior_module._PosteriorSummary, ...]:
+        means = {
+            "h": h_mean,
+            "p": p_mean,
+            "alpha": alpha_mean,
+            "beta": beta_mean,
+            "tau_plus": 0.1,
+            "tau_minus": 0.1,
+        }
+        return tuple(
+            posterior_module._PosteriorSummary(
+                quantity=quantity,
+                mean=means[quantity],
+                median=0.0,
+                interval_lower=-2.0,
+                interval_upper=2.0,
+            )
+            for quantity in posterior_module._QUANTITIES
+        )
+
+    base_summaries = controlled_summaries(
+        h_mean=base_h,
+        p_mean=base_p,
+        alpha_mean=base_alpha,
+        beta_mean=base_beta,
+    )
+    refined_summaries = controlled_summaries(
+        h_mean=refined_h,
+        p_mean=refined_p,
+        alpha_mean=refined_alpha,
+        beta_mean=refined_beta,
+    )
+    summary_sequence = iter((base_summaries, refined_summaries, refined_summaries))
+    monkeypatch.setattr(
+        posterior_module,
+        "_posterior_summaries",
+        lambda *_args: next(summary_sequence),
+    )
+
+    diagnostics, _ = posterior_module._refinement_diagnostics(
+        base,
+        refined,
+        design,
+        prior,
+        config,
+    )
+    changes = {summary.quantity: summary for summary in diagnostics.summaries}
+    expected_h = abs(base_h - refined_h) / (prior.h_max - prior.h_min)
+    expected_p = abs(base_p - refined_p) / (prior.p_max - prior.p_min)
+
+    assert changes["h"].mean == expected_h
+    assert changes["p"].mean == expected_p
+    assert changes["alpha"].mean == changes["h"].mean
+    assert changes["beta"].mean == changes["p"].mean
+    if direction == "identical":
+        assert changes["h"].mean == 0.0
+        assert changes["p"].mean == 0.0
+    else:
+        assert changes["h"].mean > 0.0
+        assert changes["p"].mean > 0.0
+
+
 def test_exact_posterior_rejects_cross_design_counts_before_backend_calls() -> None:
     count_design = LocalDesign.from_sample_size(32, c=1.0)
     requested_design = LocalDesign.from_sample_size(32, c=1.25)
