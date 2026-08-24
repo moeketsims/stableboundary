@@ -1924,6 +1924,7 @@ def _validate_example(
             "quantization_algorithm",
             "quantization_steps",
             "diagnostic_absolute_tolerance",
+            "approval_evidence",
             "approved_environments",
         },
     )
@@ -1935,6 +1936,23 @@ def _validate_example(
         or contract["diagnostic_absolute_tolerance"] != 1e-12
     ):
         raise RuntimeError("artifact oracle changed the sample quantization contract")
+    approval_evidence = _require_keys(
+        "simulation approval evidence",
+        contract["approval_evidence"],
+        {"ci_run_id", "ci_run_url", "normative_selection"},
+    )
+    if approval_evidence != {
+        "ci_run_id": 32761069162,
+        "ci_run_url": (
+            "https://github.com/moeketsims/stableboundary/actions/runs/32761069162"
+        ),
+        "normative_selection": (
+            "1e-12 was the finest full-sample quantization grid identical across "
+            "all observed Windows, Linux, and Darwin jobs; 1e-13 and 1e-14 "
+            "diverged and remain diagnostic only."
+        ),
+    }:
+        raise RuntimeError("artifact oracle changed the simulation approval evidence")
     quantization_steps = contract["quantization_steps"]
     quantized_hashes = _require_keys(
         "quantized simulation hashes",
@@ -2052,11 +2070,12 @@ def _validate_example(
         {
             "platform_system",
             "platform_machine",
-            "observed_python_version",
+            "observed_python_versions",
             "dtype",
             "observed_raw_sha256",
             "normative_quantization_step",
             "quantized_sample_sha256",
+            "observed_non_normative_quantized_sha256",
             "observed_diagnostics",
             "counts",
             "minimum",
@@ -2083,9 +2102,29 @@ def _validate_example(
             raise RuntimeError(
                 f"artifact oracle has invalid approved quantized hash for {step}"
             )
+    non_normative_hashes = _require_keys(
+        "observed non-normative simulation hashes",
+        expected_simulation_values["observed_non_normative_quantized_sha256"],
+        {"1e-13", "1e-14"},
+    )
+    for step, digests in non_normative_hashes.items():
+        if (
+            not isinstance(digests, list)
+            or not digests
+            or len(digests) != len(set(digests))
+            or any(
+                not isinstance(digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                for digest in digests
+            )
+            or expected_quantized_hashes[step] not in digests
+        ):
+            raise RuntimeError(
+                f"artifact oracle has invalid non-normative hashes for {step}"
+            )
     normative_step = expected_simulation_values["normative_quantization_step"]
-    if not isinstance(normative_step, str) or normative_step not in quantization_steps:
-        raise RuntimeError("artifact oracle has invalid normative quantization step")
+    if normative_step != "1e-12":
+        raise RuntimeError("artifact oracle changed the approved normative grid")
     observed_diagnostics = _require_keys(
         "approved observed simulation diagnostics",
         expected_simulation_values["observed_diagnostics"],
@@ -2093,9 +2132,17 @@ def _validate_example(
     )
     for name, value in observed_diagnostics.items():
         _finite_float(f"oracle observed simulation diagnostic {name}", value)
-    observed_python_version = expected_simulation_values["observed_python_version"]
-    if not isinstance(observed_python_version, str) or not observed_python_version:
-        raise RuntimeError("artifact oracle has invalid observed Python version")
+    observed_python_versions = expected_simulation_values["observed_python_versions"]
+    if (
+        not isinstance(observed_python_versions, list)
+        or not observed_python_versions
+        or observed_python_versions != sorted(set(observed_python_versions))
+        or any(
+            not isinstance(version, str) or not version
+            for version in observed_python_versions
+        )
+    ):
+        raise RuntimeError("artifact oracle has invalid observed Python versions")
     mismatches = {
         "platform_system": (
             platform_system,

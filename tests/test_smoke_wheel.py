@@ -838,7 +838,7 @@ def test_simulation_mismatch_reports_complete_observed_fingerprint() -> None:
     assert isinstance(simulation, dict)
     quantized = simulation["quantized_sample_sha256"]
     assert isinstance(quantized, dict)
-    quantized["1e-14"] = "f" * 64
+    quantized["1e-12"] = "f" * 64
 
     with pytest.raises(RuntimeError, match="approved reference") as captured:
         smoke_wheel._validate_example(payload)
@@ -846,7 +846,7 @@ def test_simulation_mismatch_reports_complete_observed_fingerprint() -> None:
     message = str(captured.value)
     for required in (
         '"sample_sha256": "a39752ae',
-        '"1e-14": "ffffffff',
+        '"1e-12": "ffffffff',
         '"counts": {',
         '"diagnostics": {',
         '"minimum": -12.046204723023758',
@@ -869,6 +869,17 @@ def test_raw_sample_hash_is_diagnostic_not_a_portability_contract() -> None:
     simulation = payload["simulation"]
     assert isinstance(simulation, dict)
     simulation["sample_sha256"] = "0" * 64
+
+    smoke_wheel._validate_example(payload)
+
+
+def test_finer_sample_hash_is_diagnostic_not_a_portability_contract() -> None:
+    payload = _valid_payload()
+    simulation = payload["simulation"]
+    assert isinstance(simulation, dict)
+    quantized = simulation["quantized_sample_sha256"]
+    assert isinstance(quantized, dict)
+    quantized["1e-14"] = "0" * 64
 
     smoke_wheel._validate_example(payload)
 
@@ -1341,16 +1352,86 @@ def test_oracle_approves_only_measured_platform_dependency_combinations() -> Non
         "1e-13",
         "1e-14",
     ]
+    assert contract["approval_evidence"] == {
+        "ci_run_id": 32761069162,
+        "ci_run_url": (
+            "https://github.com/moeketsims/stableboundary/actions/runs/32761069162"
+        ),
+        "normative_selection": (
+            "1e-12 was the finest full-sample quantization grid identical across "
+            "all observed Windows, Linux, and Darwin jobs; 1e-13 and 1e-14 "
+            "diverged and remain diagnostic only."
+        ),
+    }
     assert set(approved) == {
+        "system=Darwin|machine=arm64|numpy=2.5.2|scipy=1.18.1",
+        "system=Linux|machine=x86_64|numpy=2.2.0|scipy=1.18.0",
+        "system=Linux|machine=x86_64|numpy=2.5.2|scipy=1.18.1",
         "system=Windows|machine=AMD64|numpy=2.2.0|scipy=1.18.0",
         "system=Windows|machine=AMD64|numpy=2.2.0|scipy=1.18.1",
         "system=Windows|machine=AMD64|numpy=2.5.2|scipy=1.18.0",
         "system=Windows|machine=AMD64|numpy=2.5.2|scipy=1.18.1",
     }
     assert all(
-        evidence["normative_quantization_step"] == "1e-14"
+        evidence["normative_quantization_step"] == "1e-12"
         for evidence in approved.values()
     )
+    assert {
+        evidence["quantized_sample_sha256"]["1e-12"] for evidence in approved.values()
+    } == {"ef77eb05096ae0713fd78bc4691206a7a0efa40c48077773c0b57e570657c467"}
+
+
+def test_oracle_preserves_observed_raw_and_fine_grid_diagnostics() -> None:
+    document = json.loads(smoke_wheel.ORACLE.read_text(encoding="utf-8"))
+    approved = document["simulation_contract"]["approved_environments"]
+    linux = approved["system=Linux|machine=x86_64|numpy=2.5.2|scipy=1.18.1"]
+
+    assert linux["observed_raw_sha256"] == [
+        "0587a2b545297ad8dbb6f7c033ce58dd6c7f7c8fce15973d4c41f142b4f94511",
+        "64db08b6e7d395a9ed3ff620affff5797d9cdd1fd67ae126df9693c8aebfae79",
+    ]
+    assert linux["observed_non_normative_quantized_sha256"]["1e-14"] == [
+        "7090515105d587324069c5467fd2d36dfbea2ea01d22094a95e4df77fa0d0cda",
+        "77569e1202b2fe4b2c42e806e245816067070bc6f8d9f4c0a0be404a11838498",
+    ]
+
+
+def test_invalid_non_normative_oracle_diagnostics_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _valid_payload()
+    poisoned_oracle = copy.deepcopy(smoke_wheel._oracle_document())
+    contract = poisoned_oracle["simulation_contract"]
+    assert isinstance(contract, dict)
+    approved = contract["approved_environments"]
+    assert isinstance(approved, dict)
+    environment = approved["system=Windows|machine=AMD64|numpy=2.5.2|scipy=1.18.1"]
+    assert isinstance(environment, dict)
+    diagnostics = environment["observed_non_normative_quantized_sha256"]
+    assert isinstance(diagnostics, dict)
+    diagnostics["1e-14"] = ["0" * 64]
+    monkeypatch.setattr(smoke_wheel, "_oracle_document", lambda: poisoned_oracle)
+
+    with pytest.raises(RuntimeError, match="invalid non-normative hashes"):
+        smoke_wheel._validate_example(payload)
+
+
+def test_oracle_cannot_restore_a_finer_unportable_normative_grid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _valid_payload()
+    poisoned_oracle = copy.deepcopy(smoke_wheel._oracle_document())
+    contract = poisoned_oracle["simulation_contract"]
+    assert isinstance(contract, dict)
+    approved = contract["approved_environments"]
+    assert isinstance(approved, dict)
+    environment = approved["system=Windows|machine=AMD64|numpy=2.5.2|scipy=1.18.1"]
+    assert isinstance(environment, dict)
+    environment["normative_quantization_step"] = "1e-14"
+    monkeypatch.setattr(smoke_wheel, "_oracle_document", lambda: poisoned_oracle)
+
+    with pytest.raises(RuntimeError, match="approved normative grid"):
+        smoke_wheel._validate_example(payload)
 
 
 @pytest.mark.parametrize(
