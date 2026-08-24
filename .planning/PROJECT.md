@@ -112,7 +112,7 @@ numerical status, and fallback decision.
   known location and scale because this is the scope justified by the theorem.
 - **Parameterization**: Nolan's continuous `S0` parameterization is canonical;
   every result and serialized artifact records it explicitly.
-- **Language**: Python 3.11+ is the primary implementation language, using
+- **Language**: Python 3.12+ is the primary implementation language, using
   NumPy and SciPy behind package-owned numerical protocols.
 - **Package structure**: Use a `src/stableboundary/` layout, PEP 621 metadata,
   immutable result objects, a narrow public API, and no import-time mutation of
