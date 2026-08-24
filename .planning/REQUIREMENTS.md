@@ -174,18 +174,57 @@ status, and fallback decision.
 
 ## Traceability
 
-Roadmap creation assigns every v1 requirement to exactly one implementation
-phase. No v1 requirement may remain unmapped.
-
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| Pending roadmap assignment | TBD | Pending |
+| PKG-01 | Phase 1 | Pending |
+| PKG-02 | Phase 1 | Pending |
+| PKG-03 | Phase 1 | Pending |
+| PKG-04 | Phase 9 | Pending |
+| PAR-01 | Phase 1 | Pending |
+| PAR-02 | Phase 1 | Pending |
+| PAR-03 | Phase 1 | Pending |
+| DES-01 | Phase 1 | Pending |
+| DES-02 | Phase 1 | Pending |
+| DES-03 | Phase 1 | Pending |
+| NUM-01 | Phase 1 | Pending |
+| NUM-02 | Phase 1 | Pending |
+| NUM-03 | Phase 2 | Pending |
+| NUM-04 | Phase 1 | Pending |
+| NUM-05 | Phase 2 | Pending |
+| FIT-01 | Phase 1 | Pending |
+| FIT-02 | Phase 1 | Pending |
+| FIT-03 | Phase 1 | Pending |
+| FIT-04 | Phase 1 | Pending |
+| FIT-05 | Phase 1 | Pending |
+| FIT-06 | Phase 1 | Pending |
+| FIT-07 | Phase 1 | Pending |
+| REF-01 | Phase 2 | Pending |
+| REF-02 | Phase 2 | Pending |
+| SAFE-01 | Phase 3 | Pending |
+| SAFE-02 | Phase 3 | Pending |
+| SAFE-03 | Phase 3 | Pending |
+| CERT-01 | Phase 4 | Pending |
+| CERT-02 | Phase 4 | Pending |
+| NUIS-01 | Phase 5 | Pending |
+| NUIS-02 | Phase 5 | Pending |
+| NUIS-03 | Phase 5 | Pending |
+| NUIS-04 | Phase 6 | Pending |
+| NUIS-05 | Phase 5 | Pending |
+| VAL-01 | Phase 7 | Pending |
+| VAL-02 | Phase 1 | Pending |
+| VAL-03 | Phase 7 | Pending |
+| VAL-04 | Phase 7 | Pending |
+| PERF-01 | Phase 8 | Pending |
+| PERF-02 | Phase 8 | Pending |
+| EMP-01 | Phase 9 | Pending |
+| DOC-01 | Phase 9 | Pending |
+| AUD-01 | Phase 3 | Pending |
 
 **Coverage:**
 - v1 requirements: 43 total
-- Mapped to phases: 0
-- Unmapped: 43
+- Mapped to phases: 43
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-08-24*
-*Last updated: 2026-08-24 after initial research*
+*Last updated: 2026-08-24 after roadmap creation*
