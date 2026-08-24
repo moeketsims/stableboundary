@@ -102,6 +102,10 @@ jobs:
           uv run --frozen mypy src
       - name: Locked tests with branch coverage
         run: uv run --frozen coverage run --branch -m pytest -q -m "not installed"
+      - name: Independent oracle regeneration check
+        run: >-
+          uv run --frozen python scripts/generate_artifact_oracle.py
+          --check scripts/artifact_oracle.json
       - name: Enforce branch coverage floor
         run: uv run --frozen coverage report --fail-under=80
       - name: Locked build and metadata validation

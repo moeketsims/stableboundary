@@ -1565,6 +1565,16 @@ def test_independent_oracle_generator_never_imports_stableboundary() -> None:
     assert "stableboundary" not in imported_modules
 
 
+def test_protected_ci_runs_independent_oracle_regeneration() -> None:
+    workflow = (smoke_wheel.REPOSITORY / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert workflow.count("python scripts/generate_artifact_oracle.py") == 1
+    assert workflow.count("--check scripts/artifact_oracle.json") == 1
+    assert "Independent oracle regeneration check" in workflow
+
+
 def test_oracle_records_measured_positive_refinement_envelopes() -> None:
     document = json.loads(smoke_wheel.ORACLE.read_text(encoding="utf-8"))
     tolerances = document["tolerances"]
