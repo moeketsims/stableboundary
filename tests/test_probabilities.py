@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import FrozenInstanceError
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -102,6 +103,35 @@ def test_backend_is_runtime_checkable_and_metadata_is_immutable() -> None:
     }
     with pytest.raises(FrozenInstanceError):
         backend.metadata.tolerance = 1.0  # type: ignore[misc]
+    with pytest.raises(AttributeError):
+        backend._metadata = BackendMetadata(  # type: ignore[misc]
+            method="mutated",
+            tolerance=1e-6,
+        )
+
+
+def test_backend_metadata_wraps_overflowing_real_conversions() -> None:
+    with pytest.raises(ValidationError, match="tolerance"):
+        BackendMetadata(
+            method="overflowing-tolerance",
+            tolerance=Fraction(10**10_000, 1),  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValidationError, match="effective setting values"):
+        BackendMetadata(
+            method="overflowing-setting",
+            tolerance=1e-12,
+            effective_settings=(("huge", 10**10_000),),
+        )
+
+
+def test_backend_real_inputs_wrap_overflow_as_validation_errors() -> None:
+    with pytest.raises(ValidationError, match="loc"):
+        ScipyS0Backend().cdf(
+            0.0,
+            1.8,
+            0.0,
+            loc=Fraction(10**10_000, 1),  # type: ignore[arg-type]
+        )
 
 
 def test_backend_is_independent_of_hostile_public_scipy_state() -> None:
@@ -174,6 +204,42 @@ def test_backend_does_not_call_public_scipy_singleton(
         random_state=np.random.default_rng(17),
     )
     assert draws.shape == (3,)
+
+
+def test_private_generator_uses_the_public_generator_type_without_private_import() -> (
+    None
+):
+    assert scipy_s0_module._SCIPY_S0 is not levy_stable
+    assert type(scipy_s0_module._SCIPY_S0) is type(levy_stable)
+    source = Path("src/stableboundary/backends/_scipy_s0.py").read_text(
+        encoding="utf-8"
+    )
+    assert "scipy.stats._levy_stable" not in source
+
+
+@pytest.mark.parametrize("version", ["1.18", "1.18.0", "1.18.99", "1.18.1.dev0"])
+def test_scipy_compatibility_gate_accepts_only_the_audited_minor(
+    version: str,
+) -> None:
+    assert scipy_s0_module._require_supported_scipy(version) == version
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "1.17.9",
+        "1.19.0",
+        "2.0.0",
+        "1.18.bad",
+        "1.18.0garbage",
+        "development",
+        "",
+        None,
+    ],
+)
+def test_scipy_compatibility_gate_rejects_unaudited_versions(version: object) -> None:
+    with pytest.raises(RuntimeError, match="SciPy|version"):
+        scipy_s0_module._require_supported_scipy(version)
 
 
 def test_backend_reforces_every_private_setting_before_evaluation(
@@ -490,8 +556,12 @@ def test_cell_counts_sum_and_threshold_boundaries_are_central(
     assert counts.n_plus == 1
     assert counts.n_zero == local_design.n - 2
     assert counts.n_minus + counts.n_zero + counts.n_plus == counts.n
+    assert counts.design is local_design
+    assert counts.nuisance is nuisance
     with pytest.raises(FrozenInstanceError):
         counts.n_zero = 0  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        counts.design = LocalDesign.from_sample_size(local_design.n)  # type: ignore[misc]
 
 
 def test_cell_counts_are_shift_scale_equivariant(local_design: LocalDesign) -> None:
@@ -522,7 +592,13 @@ def test_cell_counts_are_shift_scale_equivariant(local_design: LocalDesign) -> N
         ),
         design=local_design,
     )
-    assert shifted == baseline
+    assert (shifted.n_minus, shifted.n_zero, shifted.n_plus) == (
+        baseline.n_minus,
+        baseline.n_zero,
+        baseline.n_plus,
+    )
+    assert shifted.design == baseline.design
+    assert shifted.nuisance != baseline.nuisance
 
 
 @pytest.mark.parametrize(

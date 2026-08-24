@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from importlib.metadata import PackageNotFoundError, version
 from math import isfinite
 from numbers import Integral, Real
 from typing import Final, Literal
@@ -40,17 +39,17 @@ EvidenceStatus = Literal[
 PrecisionStatus = Literal["unidentified", "not_assessed"]
 
 
-def _package_version() -> str:
+def _real_float(name: str, value: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValidationError(f"{name} must be a real number")
     try:
-        return version("stableboundary")
-    except PackageNotFoundError:  # pragma: no cover - source-tree fallback
-        return "0.1.0"
+        return float(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValidationError(f"{name} must be a finite real number") from error
 
 
 def _probability(name: str, value: float) -> float:
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValidationError(f"{name} must be a real number")
-    result = float(value)
+    result = _real_float(name, value)
     if not isfinite(result) or not 0.0 < result < 1.0:
         raise ValidationError(f"{name} must lie strictly inside (0, 1)")
     return result
@@ -75,23 +74,10 @@ def _seed(value: int) -> int:
 
 
 def _threshold(value: float) -> float:
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValidationError("threshold must be a real number")
-    result = float(value)
+    result = _real_float("threshold", value)
     if not isfinite(result) or result <= 0.0:
         raise ValidationError("threshold must be finite and strictly positive")
     return result
-
-
-def _weighted_quantile(
-    values: NDArray[np.float64],
-    mass: NDArray[np.float64],
-    probability: float,
-) -> float:
-    order = np.argsort(values.ravel(), kind="stable")
-    ordered_values = values.ravel()[order]
-    cumulative = np.cumsum(mass.ravel()[order])
-    return float(np.interp(probability, cumulative, ordered_values))
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,8 +89,8 @@ class CredibleInterval:
     mass: float
 
     def __post_init__(self) -> None:
-        lower = float(self.lower)
-        upper = float(self.upper)
+        lower = _real_float("lower", self.lower)
+        upper = _real_float("upper", self.upper)
         mass = _probability("mass", self.mass)
         if not isfinite(lower) or not isfinite(upper) or lower > upper:
             raise NumericalProbabilityError("credible interval endpoints are invalid")
@@ -228,8 +214,12 @@ class PosteriorPredictiveSample:
         values = np.asarray(self.values, dtype=np.float64)
         if values.shape != (self.draw_count,) or not np.all(np.isfinite(values)):
             raise NumericalProbabilityError("posterior predictive draws are invalid")
-        retained = np.array(values, dtype=np.float64, copy=True)
-        retained.setflags(write=False)
+        payload = np.ascontiguousarray(values, dtype=np.float64).tobytes(order="C")
+        retained = np.frombuffer(payload, dtype=np.float64)
+        if retained.flags.writeable:  # pragma: no cover - bytes contract guard
+            raise NumericalProbabilityError(
+                "posterior predictive draws could not be made immutable"
+            )
         object.__setattr__(self, "values", retained)
 
 
@@ -286,7 +276,7 @@ class PredictiveQuantileEstimate:
         }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class KnownNuisanceFit:
     """Exact finite-cell Bayesian fit with known location and scale."""
 
@@ -302,14 +292,40 @@ class KnownNuisanceFit:
         default="exact_finite_three_cell", init=False
     )
 
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        """Prevent public composition of independently produced components."""
+        del args, kwargs
+        raise TypeError("use stableboundary.fit_known_nuisance() to construct a fit")
+
     def __post_init__(self) -> None:
+        if not isinstance(self.nuisance, KnownNuisance):
+            raise ValidationError("fit nuisance must be a KnownNuisance object")
+        if not isinstance(self.design, LocalDesign):
+            raise ValidationError("fit design must be a LocalDesign object")
+        if not isinstance(self.prior, LocalPrior):
+            raise ValidationError("fit prior must be a LocalPrior object")
+        if not isinstance(self.counts, CellCounts):
+            raise ValidationError("fit counts must be a CellCounts object")
+        if not isinstance(self.posterior, PosteriorGrid):
+            raise ValidationError("fit posterior must be a PosteriorGrid object")
         self.nuisance.require_externally_known()
         if self.prior.design != self.design:
             raise ValidationError("fit prior must use the retained design")
-        if self.counts.n != self.design.n:
-            raise ValidationError("fit counts must match the retained design")
-        if self.posterior.r != self.design.r:
-            raise ValidationError("posterior and design must retain the same r")
+        if self.counts.design != self.design:
+            raise ValidationError("fit counts must retain the full fit design")
+        if self.counts.nuisance != self.nuisance:
+            raise ValidationError("fit counts must retain the fit nuisance provenance")
+        if (
+            self.counts.n_minus + self.counts.n_zero + self.counts.n_plus
+            != self.design.n
+        ):
+            raise ValidationError("fit counts must form the retained finite design")
+        if self.posterior.design != self.design:
+            raise ValidationError("posterior must retain the full fit design")
+        if self.posterior.prior != self.prior:
+            raise ValidationError("posterior must retain the fit prior")
+        if self.posterior.counts != self.counts:
+            raise ValidationError("posterior must retain the fit counts and provenance")
 
     @property
     def r(self) -> float:
@@ -345,17 +361,14 @@ class KnownNuisanceFit:
         )
 
     def parameter_summary(self, quantity: str) -> ParameterSummary:
-        values = self.posterior.values(quantity)
-        mass = self.posterior.mass
-        interval_mass = self.posterior.interval_mass
-        tail = 0.5 * (1.0 - interval_mass)
+        retained = self.posterior.summary_record(quantity)
         return ParameterSummary(
-            mean=float(np.sum(mass * values)),
-            median=_weighted_quantile(values, mass, 0.5),
+            mean=retained.mean,
+            median=retained.median,
             credible_interval=CredibleInterval(
-                lower=_weighted_quantile(values, mass, tail),
-                upper=_weighted_quantile(values, mass, 1.0 - tail),
-                mass=interval_mass,
+                lower=retained.interval_lower,
+                upper=retained.interval_upper,
+                mass=self.posterior.interval_mass,
             ),
         )
 
@@ -426,9 +439,11 @@ class KnownNuisanceFit:
 
     def audit_record(self) -> dict[str, object]:
         refinement = self.posterior.refinement
+        environment = self.posterior.environment
         return {
             "schema_version": 1,
-            "package_version": _package_version(),
+            "package_version": environment.stableboundary,
+            "environment": environment.to_dict(),
             "status": self.status,
             "method": self.method,
             "parameterization": self.posterior.backend_parameterization,
@@ -477,6 +492,7 @@ class KnownNuisanceFit:
                 "summary_changes": {
                     item.quantity: {
                         "mean": item.mean,
+                        "median": item.median,
                         "interval_lower": item.interval_lower,
                         "interval_upper": item.interval_upper,
                     }
@@ -489,6 +505,7 @@ class KnownNuisanceFit:
                 "converged": refinement.converged,
             },
             "backend": {
+                "origin": self.posterior.backend_origin,
                 "method": self.posterior.backend_method,
                 "tolerance": self.posterior.backend_tolerance,
                 "parameterization": self.posterior.backend_parameterization,
