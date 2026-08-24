@@ -1031,6 +1031,10 @@ def _build_inspected_sdist_wheel(
 
 
 def _tree_entry_identity(path: Path) -> TreeEntryIdentity:
+    if _is_windows_reparse_point(path):
+        raise RuntimeError(
+            f"virtual environment contains a Windows reparse point: {path}"
+        )
     if path.is_symlink():
         content = os.readlink(path).encode("utf-8", errors="surrogatepass")
         return TreeEntryIdentity(
@@ -1049,8 +1053,17 @@ def _tree_entry_identity(path: Path) -> TreeEntryIdentity:
     return TreeEntryIdentity(kind="file", size=size, sha256=digest.hexdigest())
 
 
+def _is_windows_reparse_point(path: Path) -> bool:
+    """Return whether *path* has Windows link-like reparse semantics."""
+    if os.name != "nt":
+        return False
+    attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(reparse_flag and attributes & reparse_flag)
+
+
 def _tree_inventory(root: Path) -> TreeInventory:
-    if not root.is_dir() or root.is_symlink():
+    if not root.is_dir() or root.is_symlink() or _is_windows_reparse_point(root):
         raise RuntimeError(f"virtual environment root is invalid: {root}")
     entries: dict[str, TreeEntryIdentity] = {}
     directories: set[str] = set()
@@ -1059,6 +1072,10 @@ def _tree_inventory(root: Path) -> TreeInventory:
         for name in sorted(raw_directories):
             path = current_path / name
             relative = path.relative_to(root).as_posix()
+            if _is_windows_reparse_point(path):
+                raise RuntimeError(
+                    f"virtual environment contains a Windows reparse point: {path}"
+                )
             if path.is_symlink():
                 entries[relative] = _tree_entry_identity(path)
                 raw_directories.remove(name)
@@ -1079,12 +1096,15 @@ def _site_packages(environment: Path) -> Path:
     else:
         version = f"python{sys.version_info.major}.{sys.version_info.minor}"
         candidates = [environment / "lib" / version / "site-packages"]
-    existing = [candidate.resolve() for candidate in candidates if candidate.is_dir()]
+    existing = [candidate for candidate in candidates if candidate.is_dir()]
     if len(existing) != 1:
         raise RuntimeError(
             f"virtual environment has an unexpected site-packages layout: {existing!r}"
         )
-    selected = existing[0]
+    candidate = existing[0]
+    if candidate.is_symlink() or _is_windows_reparse_point(candidate):
+        raise RuntimeError(f"site-packages uses link or reparse semantics: {candidate}")
+    selected = candidate.resolve()
     if (
         selected.is_symlink()
         or not selected.is_relative_to(environment.resolve())
@@ -1219,9 +1239,18 @@ def _validate_installed_distribution(
         )
 
     installed_files: dict[str, bytes] = {}
+    site_root = site_packages.resolve()
+    environment_root = environment.resolve()
     for name in sorted(installed_names):
         path = site_packages.joinpath(*PurePosixPath(name).parts)
-        if not path.is_file() or path.is_symlink():
+        resolved = path.resolve(strict=True)
+        if (
+            not path.is_file()
+            or path.is_symlink()
+            or _is_windows_reparse_point(path)
+            or not resolved.is_relative_to(site_root)
+            or not resolved.is_relative_to(environment_root)
+        ):
             raise RuntimeError(f"installed distribution file is invalid: {name}")
         installed_files[name] = path.read_bytes()
     for name, expected in inspection.wheel_files.items():

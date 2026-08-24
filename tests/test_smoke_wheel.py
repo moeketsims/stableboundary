@@ -1943,6 +1943,55 @@ def test_raw_inventory_rejects_every_extra_import_or_execution_surface(
         )
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+@pytest.mark.parametrize(
+    "relative",
+    [Path("stableboundary/backends"), Path(smoke_wheel.DIST_INFO)],
+    ids=["package", "dist-info"],
+)
+def test_raw_inventory_rejects_windows_junction_escape(
+    tmp_path: Path, relative: Path
+) -> None:
+    environment, site, artifact, digest, inspection, before = _materialize_raw_install(
+        tmp_path
+    )
+    inside = site / relative
+    outside = tmp_path / f"outside-{relative.name}"
+    inside.rename(outside)
+    child_environment = dict(os.environ)
+    child_environment.update(
+        {
+            "STABLEBOUNDARY_JUNCTION": str(inside),
+            "STABLEBOUNDARY_TARGET": str(outside),
+        }
+    )
+    subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "New-Item -ItemType Junction "
+            "-Path $env:STABLEBOUNDARY_JUNCTION "
+            "-Target $env:STABLEBOUNDARY_TARGET | Out-Null",
+        ],
+        env=child_environment,
+        check=True,
+        shell=False,
+    )
+    assert inside.is_junction()
+    assert not inside.resolve().is_relative_to(environment.resolve())
+
+    with pytest.raises(RuntimeError, match="reparse point"):
+        smoke_wheel._validate_installed_distribution(
+            artifact=artifact,
+            environment=environment,
+            expected_digest=digest,
+            inspection=inspection,
+            before=before,
+        )
+
+
 @pytest.mark.parametrize("name", ["METADATA", "RECORD"])
 def test_raw_inventory_rejects_altered_dist_info(tmp_path: Path, name: str) -> None:
     environment, site, artifact, digest, inspection, before = _materialize_raw_install(
