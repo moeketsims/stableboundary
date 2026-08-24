@@ -142,29 +142,38 @@ def test_backend_finite_reference_log_values_and_broadcasting() -> None:
 
 
 @pytest.mark.parametrize("method_name", ["sf", "logsf"])
-def test_positive_tail_backend_calls_direct_survival_method(
+def test_positive_tail_backend_uses_direct_reflected_cdf(
     monkeypatch: pytest.MonkeyPatch,
     method_name: str,
 ) -> None:
     backend = ScipyS0Backend()
-    calls = {"sf": 0, "cdf": 0}
+    calls: list[tuple[object, object, object, dict[str, object]]] = []
 
-    def direct_tail(*args: object, **kwargs: object) -> float:
-        del args, kwargs
-        calls["sf"] += 1
+    def direct_cdf(
+        x: object,
+        alpha: object,
+        beta: object,
+        **kwargs: object,
+    ) -> float:
+        calls.append((x, alpha, beta, kwargs))
         return np.exp(-3.0)
 
-    def forbidden_cdf(*args: object, **kwargs: object) -> float:
+    def forbidden_sf(*args: object, **kwargs: object) -> float:
         del args, kwargs
-        calls["cdf"] += 1
-        raise AssertionError("positive tails must not call cdf")
+        raise AssertionError("positive tails must not use SciPy's subtractive sf")
 
-    monkeypatch.setattr(levy_stable, "sf", direct_tail)
-    monkeypatch.setattr(levy_stable, "cdf", forbidden_cdf)
-    result = getattr(backend, method_name)(3.0, 1.8, 0.2)
+    monkeypatch.setattr(levy_stable, "cdf", direct_cdf)
+    monkeypatch.setattr(levy_stable, "sf", forbidden_sf)
+    result = getattr(backend, method_name)(
+        3.0, 1.8, 0.2, loc=0.5, scale=2.0
+    )
     assert np.isfinite(result)
-    assert calls["sf"] == 1
-    assert calls["cdf"] == 0
+    assert len(calls) == 1
+    x, alpha, beta, kwargs = calls[0]
+    assert float(np.asarray(x)) == -3.0
+    assert float(np.asarray(alpha)) == 1.8
+    assert float(np.asarray(beta)) == -0.2
+    assert kwargs == {"loc": -0.5, "scale": 2.0}
 
 
 def test_logcdf_uses_direct_cdf_then_checked_log(

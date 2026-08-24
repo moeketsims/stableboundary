@@ -209,7 +209,20 @@ class ScipyS0Backend:
         loc: float = 0.0,
         scale: float = 1.0,
     ) -> BackendResult:
-        return self._evaluate("sf", x, alpha, beta, loc=loc, scale=scale)
+        x_values = _numeric_array("x", x)
+        beta_values = _numeric_array("beta", beta)
+        loc_value = _finite_real("loc", loc)
+        # SciPy's generic rv_continuous._sf is implemented as 1 - _cdf.
+        # Use exact reflection instead: -X has S0(alpha, -beta, -loc, scale),
+        # so the requested upper tail is a directly evaluated lower tail.
+        return self._evaluate(
+            "cdf",
+            -x_values,
+            alpha,
+            -beta_values,
+            loc=-loc_value,
+            scale=scale,
+        )
 
     def logcdf(
         self,
@@ -243,8 +256,7 @@ class ScipyS0Backend:
         scale: float = 1.0,
     ) -> BackendResult:
         probabilities = np.asarray(
-            self._evaluate("sf", x, alpha, beta, loc=loc, scale=scale),
-            dtype=np.float64,
+            self.sf(x, alpha, beta, loc=loc, scale=scale), dtype=np.float64
         )
         if np.any(probabilities <= 0.0):
             raise NumericalProbabilityError(
