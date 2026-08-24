@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from math import isfinite
@@ -761,14 +762,48 @@ def _axis_quantile(
     axis: NDArray[np.float64],
     density: NDArray[np.float64],
     probability: float,
+    *,
+    upper_tail: bool = False,
 ) -> float:
-    """Invert the CDF of a linearly interpolated one-dimensional density."""
-    if probability <= 0.0:
-        return float(axis[0])
-    if probability >= 1.0:
-        return float(axis[-1])
-    widths = np.diff(axis)
-    segment_mass = 0.5 * (density[:-1] + density[1:]) * widths
+    """Invert one tail of a linearly interpolated one-dimensional density."""
+    if (
+        not isinstance(probability, Real)
+        or isinstance(probability, bool)
+        or not isfinite(float(probability))
+        or not 0.0 <= float(probability) <= 1.0
+    ):
+        raise ConvergenceError("continuous marginal probability must lie in [0, 1]")
+    requested = float(probability)
+    if upper_tail:
+        if requested == 0.0:
+            return float(axis[-1])
+        if requested == 1.0:
+            return float(axis[0])
+        target = requested
+        reverse = True
+    else:
+        if requested == 0.0:
+            return float(axis[0])
+        if requested == 1.0:
+            return float(axis[-1])
+        reverse = requested > 0.5
+        target = 1.0 - requested if reverse else requested
+
+    oriented_axis = -axis[::-1] if reverse else axis
+    oriented_density = density[::-1] if reverse else density
+    if (
+        oriented_axis.ndim != 1
+        or oriented_density.shape != oriented_axis.shape
+        or oriented_axis.size < 2
+        or not np.all(np.isfinite(oriented_axis))
+        or not np.all(np.isfinite(oriented_density))
+        or np.any(oriented_density < 0.0)
+        or np.any(np.diff(oriented_axis) <= 0.0)
+    ):
+        raise ConvergenceError("continuous marginal density is invalid")
+
+    widths = np.diff(oriented_axis)
+    segment_mass = 0.5 * (oriented_density[:-1] + oriented_density[1:]) * widths
     cumulative = np.concatenate(([0.0], np.cumsum(segment_mass)))
     total = float(cumulative[-1])
     if (
@@ -778,19 +813,19 @@ def _axis_quantile(
         or np.any(np.diff(cumulative) < 0.0)
     ):
         raise ConvergenceError("continuous marginal CDF is invalid")
-    target = probability * total
+    target_mass = target * total
     index = min(
-        int(np.searchsorted(cumulative, target, side="right") - 1),
-        axis.size - 2,
+        int(np.searchsorted(cumulative, target_mass, side="right") - 1),
+        oriented_axis.size - 2,
     )
     while index < segment_mass.size and segment_mass[index] <= 0.0:
         index += 1
     if index >= segment_mass.size:
-        return float(axis[-1])
-    local_target = target - float(cumulative[index])
+        raise ConvergenceError("continuous marginal quantile cannot be inverted")
+    local_target = target_mass - float(cumulative[index])
     width = float(widths[index])
-    f0 = float(density[index])
-    f1 = float(density[index + 1])
+    f0 = float(oriented_density[index])
+    f1 = float(oriented_density[index + 1])
     scale = max(abs(f0), abs(f1), np.finfo(np.float64).tiny)
     if abs(f1 - f0) <= 64.0 * np.finfo(np.float64).eps * scale:
         offset = local_target / f0
@@ -801,7 +836,83 @@ def _axis_quantile(
         if denominator <= 0.0:
             raise ConvergenceError("continuous marginal CDF cannot be inverted")
         offset = 2.0 * local_target / denominator
-    return float(axis[index] + min(width, max(0.0, offset)))
+    candidate = float(oriented_axis[index] + min(width, max(0.0, offset)))
+
+    def tail_probability(value: float) -> float:
+        if value <= oriented_axis[0]:
+            return 0.0
+        if value >= oriented_axis[-1]:
+            return 1.0
+        segment = min(
+            int(np.searchsorted(oriented_axis, value, side="right") - 1),
+            oriented_axis.size - 2,
+        )
+        local_offset = value - float(oriented_axis[segment])
+        local_width = float(widths[segment])
+        local_f0 = float(oriented_density[segment])
+        slope = (float(oriented_density[segment + 1]) - local_f0) / local_width
+        integral = (
+            float(cumulative[segment])
+            + local_f0 * local_offset
+            + 0.5 * slope * local_offset**2
+        )
+        result = integral / total
+        roundoff = 32.0 * np.finfo(np.float64).eps
+        if not isfinite(result) or result < -roundoff or result > 1.0 + roundoff:
+            raise ConvergenceError("continuous marginal CDF is invalid")
+        return min(1.0, max(0.0, result))
+
+    resolved = _validate_probability_inversion(
+        "continuous marginal",
+        candidate,
+        float(oriented_axis[0]),
+        float(oriented_axis[-1]),
+        target,
+        tail_probability,
+    )
+    return -resolved if reverse else resolved
+
+
+def _validate_probability_inversion(
+    name: str,
+    candidate: float,
+    lower: float,
+    upper: float,
+    target: float,
+    probability: Callable[[float], float],
+    *,
+    increasing: bool = True,
+) -> float:
+    """Require an interior float whose probability resolves the target tail."""
+    candidates = {
+        candidate,
+        float(np.nextafter(candidate, lower)),
+        float(np.nextafter(candidate, upper)),
+    }
+    interior = [value for value in candidates if lower < value < upper]
+    if not interior:
+        raise ConvergenceError(
+            f"{name} quantile probability {target:.17g} is not numerically "
+            "resolvable inside its support"
+        )
+    evaluated = sorted((value, probability(value)) for value in interior)
+    residual, result = min((abs(actual - target), value) for value, actual in evaluated)
+    probability_ulp = abs(float(np.spacing(np.float64(target))))
+    tolerance = max(512.0 * probability_ulp, 1e-9 * target)
+    bracketed = any(
+        (
+            evaluated[index][1] <= target <= evaluated[index + 1][1]
+            if increasing
+            else evaluated[index][1] >= target >= evaluated[index + 1][1]
+        )
+        for index in range(len(evaluated) - 1)
+    )
+    if not isfinite(residual) or (residual > tolerance and not bracketed):
+        raise ConvergenceError(
+            f"{name} quantile probability {target:.17g} is not numerically "
+            f"resolvable (best probability residual {residual:.3g})"
+        )
+    return result
 
 
 def _row_lower_integrals(
@@ -827,16 +938,49 @@ def _row_lower_integrals(
     return np.asarray(values, dtype=np.float64)
 
 
-def _tau_cdf(
+def _row_upper_integrals(
+    common: _CommonGrid,
+    suffix: NDArray[np.float64],
+    rows: NDArray[np.intp],
+    cuts: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """Vectorized exact upper integrals for piecewise-linear p rows."""
+    clipped = np.clip(cuts, common.p_axis[0], common.p_axis[-1])
+    columns = np.searchsorted(common.p_axis, clipped, side="right") - 1
+    columns = np.clip(columns, 0, common.p_axis.size - 2)
+    offsets = clipped - common.p_axis[columns]
+    widths = common.p_axis[columns + 1] - common.p_axis[columns]
+    f0 = common.density[rows, columns]
+    f1 = common.density[rows, columns + 1]
+    slopes = (f1 - f0) / widths
+    f_cut = f0 + slopes * offsets
+    remaining = widths - offsets
+    values = suffix[rows, columns + 1] + 0.5 * (f_cut + f1) * remaining
+    values = np.where(cuts <= common.p_axis[0], suffix[rows, 0], values)
+    values = np.where(cuts >= common.p_axis[-1], 0.0, values)
+    return np.asarray(values, dtype=np.float64)
+
+
+def _row_upper_suffix(common: _CommonGrid) -> NDArray[np.float64]:
+    p_widths = np.diff(common.p_axis)
+    segment_mass = 0.5 * (common.density[:, :-1] + common.density[:, 1:]) * p_widths
+    suffix = np.zeros_like(common.density)
+    suffix[:, :-1] = np.cumsum(segment_mass[:, ::-1], axis=1)[:, ::-1]
+    return suffix
+
+
+def _tau_tail_probability(
     common: _CommonGrid,
     design: LocalDesign,
     prefix: NDArray[np.float64],
     row_total: NDArray[np.float64],
+    suffix: NDArray[np.float64],
     value: float,
     *,
     positive: bool,
+    upper_tail: bool,
 ) -> float:
-    """Integrate a continuous bilinear posterior below one signed intensity."""
+    """Integrate one direct tail of a continuous bilinear push-forward."""
     p_lower = float(common.p_axis[0])
     p_upper = float(common.p_axis[-1])
     allocation_lower = p_lower if positive else 1.0 - p_upper
@@ -844,9 +988,9 @@ def _tau_cdf(
     support_lower = design.r * float(common.h_axis[0]) * allocation_lower
     support_upper = design.r * float(common.h_axis[-1]) * allocation_upper
     if value <= support_lower:
-        return 0.0
+        return 1.0 if upper_tail else 0.0
     if value >= support_upper:
-        return 1.0
+        return 0.0 if upper_tail else 1.0
 
     denominators = common.p_axis if positive else 1.0 - common.p_axis
     crossings = value / (design.r * denominators)
@@ -867,17 +1011,21 @@ def _tau_cdf(
     cuts = value / (design.r * h_values)
     if not positive:
         cuts = 1.0 - cuts
-    lower_left = _row_lower_integrals(common, prefix, row_total, h_rows, cuts)
-    lower_right = _row_lower_integrals(common, prefix, row_total, h_rows + 1, cuts)
-    conditional = (1.0 - fractions) * lower_left + fractions * lower_right
-    if not positive:
-        totals = (1.0 - fractions) * row_total[h_rows] + fractions * row_total[
-            h_rows + 1
-        ]
-        conditional = totals - conditional
+    use_lower_integral = positive != upper_tail
+    if use_lower_integral:
+        conditional_left = _row_lower_integrals(common, prefix, row_total, h_rows, cuts)
+        conditional_right = _row_lower_integrals(
+            common, prefix, row_total, h_rows + 1, cuts
+        )
+        normalization_rows = row_total
+    else:
+        conditional_left = _row_upper_integrals(common, suffix, h_rows, cuts)
+        conditional_right = _row_upper_integrals(common, suffix, h_rows + 1, cuts)
+        normalization_rows = suffix[:, 0]
+    conditional = (1.0 - fractions) * conditional_left + fractions * conditional_right
     integral = float(np.sum(integration_weights * conditional))
 
-    normalizer = float(np.sum(_trapezoid_weights(common.h_axis) * row_total))
+    normalizer = float(np.sum(_trapezoid_weights(common.h_axis) * normalization_rows))
     if not isfinite(normalizer) or normalizer <= 0.0:
         raise ConvergenceError("continuous push-forward normalizer is invalid")
     probability = integral / normalizer
@@ -887,8 +1035,32 @@ def _tau_cdf(
         or probability < -roundoff
         or probability > 1.0 + roundoff
     ):
-        raise ConvergenceError("continuous push-forward CDF is outside [0, 1]")
+        raise ConvergenceError(
+            "continuous push-forward tail probability is outside [0, 1]"
+        )
     return min(1.0, max(0.0, probability))
+
+
+def _tau_cdf(
+    common: _CommonGrid,
+    design: LocalDesign,
+    prefix: NDArray[np.float64],
+    row_total: NDArray[np.float64],
+    value: float,
+    *,
+    positive: bool,
+) -> float:
+    """Integrate the lower tail of one signed-intensity push-forward."""
+    return _tau_tail_probability(
+        common,
+        design,
+        prefix,
+        row_total,
+        _row_upper_suffix(common),
+        value,
+        positive=positive,
+        upper_tail=False,
+    )
 
 
 def _tau_quantile(
@@ -899,6 +1071,7 @@ def _tau_quantile(
     probability: float,
     *,
     positive: bool,
+    upper_tail: bool = False,
 ) -> float:
     p_lower = float(common.p_axis[0])
     p_upper = float(common.p_axis[-1])
@@ -906,28 +1079,66 @@ def _tau_quantile(
     allocation_upper = p_upper if positive else 1.0 - p_lower
     lower = design.r * float(common.h_axis[0]) * allocation_lower
     upper = design.r * float(common.h_axis[-1]) * allocation_upper
-    if probability <= 0.0:
-        return lower
-    if probability >= 1.0:
-        return upper
-    root = brentq(
-        lambda value: (
-            _tau_cdf(
-                common,
-                design,
-                prefix,
-                row_total,
-                value,
-                positive=positive,
-            )
-            - probability
-        ),
+    if (
+        not isinstance(probability, Real)
+        or isinstance(probability, bool)
+        or not isfinite(float(probability))
+        or not 0.0 <= float(probability) <= 1.0
+    ):
+        raise ConvergenceError("continuous push-forward probability must lie in [0, 1]")
+    requested = float(probability)
+    if upper_tail:
+        if requested == 0.0:
+            return upper
+        if requested == 1.0:
+            return lower
+        target = requested
+        invert_upper_tail = True
+    else:
+        if requested == 0.0:
+            return lower
+        if requested == 1.0:
+            return upper
+        invert_upper_tail = requested > 0.5
+        target = 1.0 - requested if invert_upper_tail else requested
+
+    suffix = _row_upper_suffix(common)
+
+    def tail_probability(value: float) -> float:
+        return _tau_tail_probability(
+            common,
+            design,
+            prefix,
+            row_total,
+            suffix,
+            value,
+            positive=positive,
+            upper_tail=invert_upper_tail,
+        )
+
+    try:
+        root = brentq(
+            lambda value: tail_probability(value) - target,
+            lower,
+            upper,
+            xtol=float(np.nextafter(0.0, 1.0)),
+            rtol=4.0 * np.finfo(np.float64).eps,
+            maxiter=256,
+        )
+    except (RuntimeError, ValueError, OverflowError) as error:
+        raise ConvergenceError(
+            "continuous push-forward quantile cannot be inverted"
+        ) from error
+    signed_name = "tau_plus" if positive else "tau_minus"
+    return _validate_probability_inversion(
+        f"continuous {signed_name}",
+        float(root),
         lower,
         upper,
-        xtol=max(np.finfo(np.float64).tiny, 1e-13 * (upper - lower)),
-        rtol=8.0 * np.finfo(np.float64).eps,
+        target,
+        tail_probability,
+        increasing=not invert_upper_tail,
     )
-    return float(root)
 
 
 def _posterior_summaries(
@@ -959,17 +1170,44 @@ def _posterior_summaries(
     }
     tail = 0.5 * (1.0 - interval_mass)
 
-    def quantile(quantity: str, probability: float) -> float:
+    def quantile(
+        quantity: str,
+        probability: float,
+        *,
+        upper_tail: bool = False,
+    ) -> float:
         if quantity == "h":
-            return _axis_quantile(common.h_axis, h_density, probability)
+            return _axis_quantile(
+                common.h_axis,
+                h_density,
+                probability,
+                upper_tail=upper_tail,
+            )
         if quantity == "p":
-            return _axis_quantile(common.p_axis, p_density, probability)
+            return _axis_quantile(
+                common.p_axis,
+                p_density,
+                probability,
+                upper_tail=upper_tail,
+            )
         if quantity == "alpha":
             return 2.0 - design.r * _axis_quantile(
-                common.h_axis, h_density, 1.0 - probability
+                common.h_axis,
+                h_density,
+                probability,
+                upper_tail=not upper_tail,
             )
         if quantity == "beta":
-            return 2.0 * _axis_quantile(common.p_axis, p_density, probability) - 1.0
+            return (
+                2.0
+                * _axis_quantile(
+                    common.p_axis,
+                    p_density,
+                    probability,
+                    upper_tail=upper_tail,
+                )
+                - 1.0
+            )
         if quantity == "tau_plus":
             return _tau_quantile(
                 common,
@@ -978,6 +1216,7 @@ def _posterior_summaries(
                 row_total,
                 probability,
                 positive=True,
+                upper_tail=upper_tail,
             )
         if quantity == "tau_minus":
             return _tau_quantile(
@@ -987,6 +1226,7 @@ def _posterior_summaries(
                 row_total,
                 probability,
                 positive=False,
+                upper_tail=upper_tail,
             )
         raise ConvergenceError(f"unknown posterior summary: {quantity!r}")
 
@@ -996,7 +1236,7 @@ def _posterior_summaries(
             mean=float(np.sum(evaluation.mass * value)),
             median=quantile(name, 0.5),
             interval_lower=quantile(name, tail),
-            interval_upper=quantile(name, 1.0 - tail),
+            interval_upper=quantile(name, tail, upper_tail=True),
         )
         for name, value in values.items()
     )
