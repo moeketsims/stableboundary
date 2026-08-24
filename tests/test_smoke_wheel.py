@@ -1999,6 +1999,32 @@ def test_runtime_mutation_is_rejected_by_post_import_raw_proof(
         )
 
 
+def test_installed_probe_disables_bytecode_before_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: list[str] = []
+
+    def record(command: list[str], **kwargs: object) -> str:
+        del kwargs
+        observed.extend(command)
+        return "{}"
+
+    monkeypatch.setattr(smoke_wheel, "_run", record)
+    installed = smoke_wheel.InstalledDistribution(
+        site_packages=tmp_path,
+        import_origin=tmp_path / "stableboundary" / "__init__.py",
+    )
+
+    smoke_wheel._installed_probe(
+        Path("python"),
+        cwd=tmp_path,
+        artifact=tmp_path / smoke_wheel.EXPECTED_WHEEL,
+        installed=installed,
+    )
+
+    assert observed[1:4] == ["-I", "-B", "-S"]
+
+
 def test_hostile_package_code_cannot_execute_before_raw_validation(
     tmp_path: Path,
 ) -> None:

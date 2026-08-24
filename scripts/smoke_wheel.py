@@ -1323,7 +1323,7 @@ print(json.dumps({
     )
     decoded = json.loads(
         _run(
-            [str(python), "-I", "-S", "-c", source],
+            [str(python), "-I", "-B", "-S", "-c", source],
             cwd=cwd,
             stage=f"installed provenance probe for {artifact.name}",
             timeout_seconds=IMPORT_TIMEOUT_SECONDS,
@@ -1611,7 +1611,7 @@ print(json.dumps({
     )
     decoded = json.loads(
         _run(
-            [str(python), "-I", "-S", "-c", source],
+            [str(python), "-I", "-B", "-S", "-c", source],
             cwd=cwd,
             stage=f"independent installed science probe for {artifact.name}",
             timeout_seconds=EXAMPLE_TIMEOUT_SECONDS,
@@ -1684,7 +1684,7 @@ print(json.dumps({
 """
     decoded = json.loads(
         _run(
-            [str(python), "-I", "-c", source],
+            [str(python), "-I", "-B", "-c", source],
             cwd=cwd,
             stage=stage,
             timeout_seconds=IMPORT_TIMEOUT_SECONDS,
@@ -3369,7 +3369,7 @@ def _exercise_archive(
             shutil.copy2(EXAMPLE, copied_example)
             decoded = json.loads(
                 _run(
-                    [str(python), "-I", str(copied_example)],
+                    [str(python), "-I", "-B", str(copied_example)],
                     cwd=work,
                     stage=f"public example for {source_artifact.name}",
                     timeout_seconds=EXAMPLE_TIMEOUT_SECONDS,
