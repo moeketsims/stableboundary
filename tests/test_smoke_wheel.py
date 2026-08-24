@@ -854,7 +854,7 @@ def test_science_probe_failure_emits_complete_regression_fingerprint() -> None:
     message = str(captured.value)
     assert "actual=0.001" in message
     assert "expected=5.329070518200751e-15" in message
-    assert "absolute_tolerance=" in message
+    assert "allowed_interval=(0.0, 5e-14]" in message
     assert '"component_count": 28' in message
     assert '"summary.alpha.interval_lower"' in message
     assert '"summary.tau_plus.median"' in message
@@ -1293,6 +1293,35 @@ NONZERO_REFINEMENT_PATHS = [
     ("predictive_tail", "positive"),
 ]
 
+NOISE_SCALE_REFINEMENT_PATHS = [
+    ("log_normalizer_change",),
+    *[("summary_changes", quantity, "mean") for quantity in smoke_wheel.QUANTITIES],
+    ("predictive_tail", "negative"),
+    ("predictive_tail", "positive"),
+]
+
+SUBSTANTIVE_REFINEMENT_PATHS = [
+    ("joint_total_variation",),
+    *[
+        ("summary_changes", quantity, component)
+        for quantity in smoke_wheel.QUANTITIES
+        for component in ("median", "interval_lower", "interval_upper")
+    ],
+]
+
+
+def _replace_refinement_component(
+    payload: dict[str, object], path: tuple[str, ...], value: float
+) -> None:
+    refinement = payload["refinement"]
+    assert isinstance(refinement, dict)
+    selected = refinement
+    for name in path[:-1]:
+        nested = selected[name]
+        assert isinstance(nested, dict)
+        selected = nested
+    selected[path[-1]] = value
+
 
 @pytest.mark.parametrize("path", NONZERO_REFINEMENT_PATHS)
 def test_every_nonzero_refinement_component_is_reference_bound(
@@ -1309,6 +1338,44 @@ def test_every_nonzero_refinement_component_is_reference_bound(
     selected[path[-1]] = 0.0
 
     with pytest.raises(RuntimeError, match="lost nonzero refinement evidence"):
+        smoke_wheel._validate_example(payload)
+
+
+@pytest.mark.parametrize("path", NOISE_SCALE_REFINEMENT_PATHS)
+@pytest.mark.parametrize(
+    ("bad_value", "message"),
+    [
+        (0.0, "lost nonzero refinement evidence"),
+        (5.000000000000001e-14, "5e-14 bound"),
+    ],
+)
+def test_noise_scale_refinement_band_rejects_zero_and_overshoot(
+    path: tuple[str, ...], bad_value: float, message: str
+) -> None:
+    payload = _valid_payload()
+    _replace_refinement_component(payload, path, bad_value)
+
+    with pytest.raises(RuntimeError, match=message):
+        smoke_wheel._validate_example(payload)
+
+
+@pytest.mark.parametrize("path", SUBSTANTIVE_REFINEMENT_PATHS)
+def test_substantive_refinement_components_remain_reference_bound(
+    path: tuple[str, ...],
+) -> None:
+    payload = _valid_payload()
+    refinement = payload["refinement"]
+    assert isinstance(refinement, dict)
+    selected = refinement
+    for name in path[:-1]:
+        nested = selected[name]
+        assert isinstance(nested, dict)
+        selected = nested
+    original = selected[path[-1]]
+    assert isinstance(original, float)
+    selected[path[-1]] = original + 1e-8
+
+    with pytest.raises(RuntimeError, match="trusted numerical reference"):
         smoke_wheel._validate_example(payload)
 
 
@@ -1447,6 +1514,55 @@ def test_independent_oracle_generator_never_imports_stableboundary() -> None:
     )
 
     assert "stableboundary" not in imported_modules
+
+
+def test_oracle_records_measured_positive_refinement_envelopes() -> None:
+    document = json.loads(smoke_wheel.ORACLE.read_text(encoding="utf-8"))
+    tolerances = document["tolerances"]
+    assert tolerances["refinement_noise_scale_upper"] == 5e-14
+    evidence = tolerances["refinement_noise_scale_evidence"]
+    assert evidence["ci_run_id"] == 32763920150
+    assert evidence["ci_run_url"] == (
+        "https://github.com/moeketsims/stableboundary/actions/runs/32763920150"
+    )
+    assert evidence["observed_positive_envelopes"] == {
+        "log-normalizer change": {
+            "minimum": 3.552713678800501e-15,
+            "maximum": 5.329070518200751e-15,
+        },
+        "predictive negative": {
+            "minimum": 9.485409843146625e-15,
+            "maximum": 1.1951616402364784e-14,
+        },
+        "predictive positive": {
+            "minimum": 3.0241327034972768e-15,
+            "maximum": 5.645047713194905e-15,
+        },
+        "alpha mean": {
+            "minimum": 1.5237943101242703e-14,
+            "maximum": 3.809485775310675e-14,
+        },
+        "beta mean": {
+            "minimum": 2.2204460492503135e-15,
+            "maximum": 4.163336342344338e-15,
+        },
+        "h mean": {
+            "minimum": 1.6579330501069005e-15,
+            "maximum": 2.6053233644537005e-15,
+        },
+        "p mean": {
+            "minimum": 2.2204460492503135e-15,
+            "maximum": 3.700743415417189e-15,
+        },
+        "tau_plus mean": {
+            "minimum": 2.1216195530814406e-15,
+            "maximum": 3.536032588469068e-15,
+        },
+        "tau_minus mean": {
+            "minimum": 4.420040735586335e-16,
+            "maximum": 1.119743653015205e-15,
+        },
+    }
 
 
 def test_oracle_approves_only_measured_platform_dependency_combinations() -> None:

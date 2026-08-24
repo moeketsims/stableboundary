@@ -41,6 +41,19 @@ EXPECTED_SDIST = f"{PROJECT_NAME}-{PROJECT_VERSION}.tar.gz"
 EXPECTED_SDIST_ROOT = f"{PROJECT_NAME}-{PROJECT_VERSION}"
 DIST_INFO = f"{PROJECT_NAME}-{PROJECT_VERSION}.dist-info"
 QUANTITIES = {"h", "p", "alpha", "beta", "tau_plus", "tau_minus"}
+REFINEMENT_NOISE_COMPONENTS = frozenset(
+    {
+        "log-normalizer change",
+        "predictive negative",
+        "predictive positive",
+        "alpha mean",
+        "beta mean",
+        "h mean",
+        "p mean",
+        "tau_plus mean",
+        "tau_minus mean",
+    }
+)
 VENV_TIMEOUT_SECONDS = 180.0
 INSTALL_TIMEOUT_SECONDS = 600.0
 IMPORT_TIMEOUT_SECONDS = 60.0
@@ -1422,9 +1435,8 @@ def _trusted_numerical_oracle(
             "algebraic",
             "posterior_mass",
             "refinement_absolute",
-            "refinement_near_zero_cutoff",
-            "refinement_near_zero_floor",
-            "refinement_near_zero_relative",
+            "refinement_noise_scale_upper",
+            "refinement_noise_scale_evidence",
         },
     )
     return reference, accuracy, tolerances
@@ -1558,9 +1570,8 @@ def _validate_refinement(
             "algebraic",
             "posterior_mass",
             "refinement_absolute",
-            "refinement_near_zero_cutoff",
-            "refinement_near_zero_floor",
-            "refinement_near_zero_relative",
+            "refinement_noise_scale_upper",
+            "refinement_noise_scale_evidence",
         },
     )
     if (
@@ -1670,44 +1681,70 @@ def _validate_refinement(
         "oracle refinement absolute tolerance",
         configured_tolerances["refinement_absolute"],
     )
-    near_zero_cutoff = _finite_float(
-        "oracle refinement near-zero cutoff",
-        configured_tolerances["refinement_near_zero_cutoff"],
+    noise_scale_upper = _finite_float(
+        "oracle refinement noise-scale upper bound",
+        configured_tolerances["refinement_noise_scale_upper"],
     )
-    near_zero_floor = _finite_float(
-        "oracle refinement near-zero floor",
-        configured_tolerances["refinement_near_zero_floor"],
-    )
-    near_zero_relative = _finite_float(
-        "oracle refinement near-zero relative tolerance",
-        configured_tolerances["refinement_near_zero_relative"],
+    if absolute_tolerance <= 0.0 or noise_scale_upper != 5e-14:
+        raise RuntimeError("artifact oracle has invalid refinement tolerances")
+    noise_evidence = _require_keys(
+        "refinement noise-scale evidence",
+        configured_tolerances["refinement_noise_scale_evidence"],
+        {"ci_run_id", "ci_run_url", "scope", "observed_positive_envelopes"},
     )
     if (
-        min(
-            absolute_tolerance,
-            near_zero_cutoff,
-            near_zero_floor,
-            near_zero_relative,
+        noise_evidence["ci_run_id"] != 32763920150
+        or noise_evidence["ci_run_url"]
+        != "https://github.com/moeketsims/stableboundary/actions/runs/32763920150"
+        or noise_evidence["scope"]
+        != (
+            "Eight Linux and Darwin CI fingerprints plus the independently "
+            "reproduced Windows reference; exact regression values remain in "
+            "refinement and the envelopes are diagnostic."
         )
-        <= 0.0
     ):
-        raise RuntimeError("artifact oracle has invalid refinement tolerances")
+        raise RuntimeError("artifact oracle changed refinement evidence provenance")
+    observed_envelopes = _require_keys(
+        "observed refinement noise-scale envelopes",
+        noise_evidence["observed_positive_envelopes"],
+        set(REFINEMENT_NOISE_COMPONENTS),
+    )
+    for name, raw_envelope in observed_envelopes.items():
+        envelope = _require_keys(
+            f"observed {name} refinement envelope",
+            raw_envelope,
+            {"minimum", "maximum"},
+        )
+        minimum = _finite_float(
+            f"observed {name} refinement minimum", envelope["minimum"]
+        )
+        maximum = _finite_float(
+            f"observed {name} refinement maximum", envelope["maximum"]
+        )
+        expected_value = expected_components[name]
+        if not 0.0 < minimum <= expected_value <= maximum <= noise_scale_upper:
+            raise RuntimeError(
+                f"artifact oracle has invalid observed envelope for {name}"
+            )
     for name, actual_value in components.items():
         expected_value = expected_components[name]
         if expected_value <= 0.0 or actual_value <= 0.0:
             raise RuntimeError(
                 f"installed example lost nonzero refinement evidence for {name}"
             )
-        component_tolerance = (
-            max(near_zero_floor, expected_value * near_zero_relative)
-            if expected_value < near_zero_cutoff
-            else absolute_tolerance
-        )
+        if name in REFINEMENT_NOISE_COMPONENTS:
+            if actual_value > noise_scale_upper:
+                raise RuntimeError(
+                    "installed example noise-scale refinement exceeds its "
+                    f"5e-14 bound for {name}: actual={actual_value!r}, "
+                    f"expected={expected_value!r}, allowed_interval=(0.0, 5e-14]"
+                )
+            continue
         _reference_close(
             f"refinement {name}",
             actual_value,
             expected_value,
-            tolerance=component_tolerance,
+            tolerance=absolute_tolerance,
         )
 
 

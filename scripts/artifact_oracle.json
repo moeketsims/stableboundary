@@ -600,8 +600,49 @@
     "algebraic": 2e-14,
     "posterior_mass": 1e-12,
     "refinement_absolute": 5e-12,
-    "refinement_near_zero_cutoff": 1e-12,
-    "refinement_near_zero_floor": 1e-16,
-    "refinement_near_zero_relative": 0.1
+    "refinement_noise_scale_upper": 5e-14,
+    "refinement_noise_scale_evidence": {
+      "ci_run_id": 32763920150,
+      "ci_run_url": "https://github.com/moeketsims/stableboundary/actions/runs/32763920150",
+      "scope": "Eight Linux and Darwin CI fingerprints plus the independently reproduced Windows reference; exact regression values remain in refinement and the envelopes are diagnostic.",
+      "observed_positive_envelopes": {
+        "log-normalizer change": {
+          "minimum": 3.552713678800501e-15,
+          "maximum": 5.329070518200751e-15
+        },
+        "predictive negative": {
+          "minimum": 9.485409843146625e-15,
+          "maximum": 1.1951616402364784e-14
+        },
+        "predictive positive": {
+          "minimum": 3.0241327034972768e-15,
+          "maximum": 5.645047713194905e-15
+        },
+        "alpha mean": {
+          "minimum": 1.5237943101242703e-14,
+          "maximum": 3.809485775310675e-14
+        },
+        "beta mean": {
+          "minimum": 2.2204460492503135e-15,
+          "maximum": 4.163336342344338e-15
+        },
+        "h mean": {
+          "minimum": 1.6579330501069005e-15,
+          "maximum": 2.6053233644537005e-15
+        },
+        "p mean": {
+          "minimum": 2.2204460492503135e-15,
+          "maximum": 3.700743415417189e-15
+        },
+        "tau_plus mean": {
+          "minimum": 2.1216195530814406e-15,
+          "maximum": 3.536032588469068e-15
+        },
+        "tau_minus mean": {
+          "minimum": 4.420040735586335e-16,
+          "maximum": 1.119743653015205e-15
+        }
+      }
+    }
   }
 }
