@@ -12,7 +12,8 @@ import tarfile
 import tempfile
 import venv
 import zipfile
-from pathlib import Path, PurePosixPath
+from collections.abc import Iterable
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -55,8 +56,7 @@ def _archives() -> tuple[Path, Path]:
     sdists = sorted(
         path.resolve()
         for path in DIST.iterdir()
-        if path.is_file()
-        and (path.name.endswith(".tar.gz") or path.suffix.lower() == ".zip")
+        if path.is_file() and path.name.endswith(".tar.gz")
     )
     if len(wheels) != 1 or len(sdists) != 1:
         raise RuntimeError(
@@ -71,8 +71,33 @@ def _archives() -> tuple[Path, Path]:
     return wheels[0], sdists[0]
 
 
-def _assert_members_safe(artifact: Path, members: list[str], *, wheel: bool) -> None:
-    normalized = [name.replace("\\", "/").lstrip("./") for name in members]
+def _validated_archive_path(artifact: Path, name: str, *, subject: str) -> str:
+    """Return one normalized member path after rejecting extraction hazards."""
+    if not name or "\x00" in name:
+        raise RuntimeError(f"invalid {subject} in {artifact.name}: {name!r}")
+    if "\\" in name:
+        raise RuntimeError(
+            f"backslash is forbidden in {subject} in {artifact.name}: {name}"
+        )
+    if name.startswith("/") or PureWindowsPath(name).drive:
+        raise RuntimeError(f"absolute {subject} in {artifact.name}: {name}")
+
+    path = PurePosixPath(name)
+    if path.is_absolute() or ".." in path.parts:
+        raise RuntimeError(f"parent traversal in {subject} in {artifact.name}: {name}")
+    normalized = path.as_posix()
+    if normalized in {"", "."}:
+        raise RuntimeError(f"invalid {subject} in {artifact.name}: {name!r}")
+    return normalized
+
+
+def _assert_members_safe(
+    artifact: Path, members: Iterable[str], *, wheel: bool
+) -> None:
+    normalized = [
+        _validated_archive_path(artifact, name, subject="archive member")
+        for name in members
+    ]
     for name in normalized:
         path = PurePosixPath(name)
         lowered_parts = {part.lower() for part in path.parts}
@@ -91,7 +116,19 @@ def _inspect_archives(wheel: Path, sdist: Path) -> None:
     with zipfile.ZipFile(wheel) as archive:
         _assert_members_safe(wheel, archive.namelist(), wheel=True)
     with tarfile.open(sdist, mode="r:*") as archive:
-        _assert_members_safe(sdist, archive.getnames(), wheel=False)
+        members = archive.getmembers()
+        _assert_members_safe(sdist, (member.name for member in members), wheel=False)
+        for member in members:
+            if member.issym() or member.islnk():
+                _validated_archive_path(
+                    sdist,
+                    member.linkname,
+                    subject=f"link target for {member.name}",
+                )
+            if member.ischr() or member.isblk() or member.isfifo():
+                raise RuntimeError(
+                    f"special archive member in {sdist.name}: {member.name}"
+                )
 
 
 def _venv_python(environment: Path) -> Path:
