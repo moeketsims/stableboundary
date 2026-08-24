@@ -7,7 +7,7 @@ from importlib.metadata import PackageNotFoundError, version
 from math import isfinite
 from numbers import Integral, Real
 from platform import python_version
-from typing import Final, Literal, Self
+from typing import Final, Literal
 
 import numpy as np
 import scipy  # type: ignore[import-untyped]
@@ -353,53 +353,6 @@ class PosteriorGrid:
         """Prevent public construction or ``dataclasses.replace`` forgery."""
         del args, kwargs
         raise TypeError("use compute_exact_posterior() to construct a posterior")
-
-    @classmethod
-    def _from_components(
-        cls,
-        *,
-        h_nodes: NDArray[np.float64],
-        p_nodes: NDArray[np.float64],
-        mass: NDArray[np.float64],
-        q_minus: NDArray[np.float64],
-        q_plus: NDArray[np.float64],
-        log_normalizer: float,
-        base_nodes: int,
-        refined_nodes: int,
-        interval_mass: float,
-        summaries: tuple[_PosteriorSummary, ...],
-        design: LocalDesign,
-        prior: LocalPrior,
-        counts: CellCounts,
-        backend_metadata: BackendMetadata,
-        backend_origin: Literal["canonical_scipy_s0", "custom"],
-        environment: _InferenceEnvironment,
-        refinement: RefinementDiagnostics,
-    ) -> Self:
-        """Build one posterior through the package-owned validated path."""
-        result = object.__new__(cls)
-        for name, value in (
-            ("h_nodes", h_nodes),
-            ("p_nodes", p_nodes),
-            ("mass", mass),
-            ("q_minus", q_minus),
-            ("q_plus", q_plus),
-            ("log_normalizer", log_normalizer),
-            ("base_nodes", base_nodes),
-            ("refined_nodes", refined_nodes),
-            ("interval_mass", interval_mass),
-            ("summaries", summaries),
-            ("design", design),
-            ("prior", prior),
-            ("counts", counts),
-            ("backend_metadata", backend_metadata),
-            ("backend_origin", backend_origin),
-            ("environment", environment),
-            ("refinement", refinement),
-        ):
-            object.__setattr__(result, name, value)
-        result.__post_init__()
-        return result
 
     def __post_init__(self) -> None:
         base_nodes = _bounded_integer(
@@ -1204,25 +1157,31 @@ def compute_exact_posterior(
             f"maximum component {diagnostics.maximum_component:.6g} exceeds "
             f"tolerance {diagnostics.tolerance:.6g}"
         )
-    return PosteriorGrid._from_components(
-        h_nodes=refined.h_nodes,
-        p_nodes=refined.p_nodes,
-        mass=refined.mass,
-        q_minus=refined.q_minus,
-        q_plus=refined.q_plus,
-        log_normalizer=refined.log_normalizer,
-        base_nodes=controls.base_nodes,
-        refined_nodes=controls.refined_nodes,
-        interval_mass=controls.interval_mass,
-        summaries=summaries,
-        design=design,
-        prior=prior,
-        counts=counts,
-        backend_metadata=metadata,
-        backend_origin=backend_origin,
-        environment=environment,
-        refinement=diagnostics,
-    )
+    # Construction is deliberately local to the computation that produced the
+    # evidence.  The supported public API exposes no reusable rebinding factory.
+    posterior = object.__new__(PosteriorGrid)
+    for name, value in (
+        ("h_nodes", refined.h_nodes),
+        ("p_nodes", refined.p_nodes),
+        ("mass", refined.mass),
+        ("q_minus", refined.q_minus),
+        ("q_plus", refined.q_plus),
+        ("log_normalizer", refined.log_normalizer),
+        ("base_nodes", controls.base_nodes),
+        ("refined_nodes", controls.refined_nodes),
+        ("interval_mass", controls.interval_mass),
+        ("summaries", summaries),
+        ("design", design),
+        ("prior", prior),
+        ("counts", counts),
+        ("backend_metadata", metadata),
+        ("backend_origin", backend_origin),
+        ("environment", environment),
+        ("refinement", diagnostics),
+    ):
+        object.__setattr__(posterior, name, value)
+    posterior.__post_init__()
+    return posterior
 
 
 __all__ = ["PosteriorGrid", "QuadratureConfig", "compute_exact_posterior"]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, fields, replace
+from dataclasses import FrozenInstanceError, replace
 from fractions import Fraction
 
 import numpy as np
@@ -475,9 +475,10 @@ def test_fit_known_returns_finite_six_quantity_summary_and_json_audit(
     assert fit.audit_record() == captured_audit
 
 
-def test_posterior_construction_rebinding_and_internal_forgery_are_rejected() -> None:
+def test_posterior_has_no_supported_construction_or_rebinding_path() -> None:
     with pytest.raises(TypeError, match="compute_exact_posterior"):
         PosteriorGrid()
+    assert "_from_components" not in PosteriorGrid.__dict__
 
     design = LocalDesign.from_sample_size(32)
     prior = LocalPrior.default(design)
@@ -501,55 +502,34 @@ def test_posterior_construction_rebinding_and_internal_forgery_are_rejected() ->
         ("counts", alternate_counts),
         ("prior", alternate_prior),
         ("backend_metadata", alternate_backend),
+        ("backend_origin", "canonical_scipy_s0"),
     ):
         with pytest.raises(FrozenInstanceError):
             setattr(posterior, field_name, alternate)
         with pytest.raises(TypeError, match="compute_exact_posterior"):
             replace(posterior, **{field_name: alternate})
 
-    components = {
-        item.name: getattr(posterior, item.name) for item in fields(posterior)
-    }
-    forged_nodes = np.array(posterior.h_nodes, copy=True)
-    forged_nodes[0, 0] = prior.h_max
-    with pytest.raises(ConvergenceError, match="nodes do not match"):
-        PosteriorGrid._from_components(
-            **(components | {"h_nodes": forged_nodes})  # type: ignore[arg-type]
-        )
-    forged_mass = np.zeros_like(posterior.mass)
-    forged_mass[0, 0] = 1.0
-    with pytest.raises(ConvergenceError, match="mean does not match"):
-        PosteriorGrid._from_components(
-            **(components | {"mass": forged_mass})  # type: ignore[arg-type]
-        )
 
-
-def test_fit_construction_is_package_controlled_and_rejects_false_composition() -> None:
+def test_fit_has_no_supported_construction_or_rebinding_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     with pytest.raises(TypeError, match="fit_known_nuisance"):
         KnownNuisanceFit()
+    assert "_from_components" not in KnownNuisanceFit.__dict__
 
+    monkeypatch.setattr(posterior_module, "ScipyS0Backend", _AnalyticBackend)
     design = LocalDesign.from_sample_size(32)
-    prior = LocalPrior.default(design)
-    counts = _counts(design)
-    posterior = compute_exact_posterior(
-        counts,
-        design,
-        prior,
-        backend=_AnalyticBackend(),
-    )
-    conflicting_nuisance = KnownNuisance.externally_known(
+    values = np.zeros(design.n)
+    fit = fit_known_nuisance(
+        values,
         loc=0.0,
         scale=1.0,
-        provenance="different calibration",
+        design=design,
     )
-    with pytest.raises(ValidationError, match="nuisance provenance"):
-        KnownNuisanceFit._from_components(
-            nuisance=conflicting_nuisance,
-            design=design,
-            prior=prior,
-            counts=counts,
-            posterior=posterior,
-        )
+    with pytest.raises(FrozenInstanceError):
+        fit.posterior = fit.posterior  # type: ignore[misc]
+    with pytest.raises(TypeError, match="fit_known_nuisance"):
+        replace(fit, posterior=fit.posterior)
 
 
 def test_fit_known_rejects_observation_count_mismatch() -> None:

@@ -108,7 +108,10 @@ def _numeric_array(name: str, value: ArrayLike) -> NDArray[np.float64]:
 def _finite_real(name: str, value: float) -> float:
     if isinstance(value, bool) or not isinstance(value, Real):
         raise ValidationError(f"{name} must be a real number")
-    result = float(value)
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValidationError(f"{name} must be finite") from error
     if not isfinite(result):
         raise ValidationError(f"{name} must be finite")
     return result

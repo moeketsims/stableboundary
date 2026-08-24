@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from fractions import Fraction
+
 import numpy as np
 import pytest
 from numpy.random import Generator
@@ -9,6 +11,7 @@ from numpy.typing import ArrayLike, NDArray
 
 import stableboundary.posterior as posterior_module
 from stableboundary import (
+    CredibleInterval,
     InfiniteVarianceError,
     LocalDesign,
     QuadratureConfig,
@@ -145,6 +148,18 @@ def test_prediction_explicitly_refuses_a_custom_inference_backend(
         custom_fit.posterior.prediction_backend()
     with pytest.raises(ValidationError, match="custom backend"):
         custom_fit.tail_probabilities(4.0)
+
+
+def test_public_probability_inputs_wrap_overflow_as_validation_errors(
+    fit: object,
+) -> None:
+    huge = Fraction(10**10_000, 1)
+    with pytest.raises(ValidationError, match="threshold"):
+        fit.tail_probabilities(huge)
+    with pytest.raises(ValidationError, match="probability"):
+        fit.predictive_quantile(huge)
+    with pytest.raises(ValidationError, match="lower"):
+        CredibleInterval(lower=huge, upper=1.0, mass=0.9)  # type: ignore[arg-type]
 
 
 def test_seeded_prediction_and_quantile_mc_metadata_are_reproducible(
