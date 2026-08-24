@@ -176,8 +176,10 @@ def test_affine_mean_refinement_matches_primitive_coordinates_exactly() -> None:
     assert refinement["beta"].mean == refinement["p"].mean
 
 
+@pytest.mark.parametrize("direction", ["forward", "reverse", "identical"])
 def test_affine_mean_refinement_survives_floating_point_cancellation(
     monkeypatch: pytest.MonkeyPatch,
+    direction: str,
 ) -> None:
     design = LocalDesign.from_sample_size(128)
     prior = LocalPrior.default(design)
@@ -192,16 +194,20 @@ def test_affine_mean_refinement_survives_floating_point_cancellation(
         _AnalyticBackend(),
     )
 
-    base_h = prior.h_min
-    refined_h = float(np.nextafter(base_h, np.inf))
-    base_p = prior.p_min
-    refined_p = float(np.nextafter(base_p, np.inf))
+    lower_h = prior.h_min
+    upper_h = float(np.nextafter(lower_h, np.inf))
+    lower_p = prior.p_min
+    upper_p = float(np.nextafter(lower_p, np.inf))
+    primitive_pairs = {
+        "forward": (lower_h, upper_h, lower_p, upper_p),
+        "reverse": (upper_h, lower_h, upper_p, lower_p),
+        "identical": (lower_h, lower_h, lower_p, lower_p),
+    }
+    base_h, refined_h, base_p, refined_p = primitive_pairs[direction]
     base_alpha = 2.0 - design.r * base_h
     refined_alpha = 2.0 - design.r * refined_h
     base_beta = 2.0 * base_p - 1.0
     refined_beta = 2.0 * refined_p - 1.0
-    assert base_h != refined_h
-    assert base_p != refined_p
     assert base_alpha == refined_alpha
     assert base_beta == refined_beta
 
@@ -258,11 +264,19 @@ def test_affine_mean_refinement_survives_floating_point_cancellation(
         config,
     )
     changes = {summary.quantity: summary for summary in diagnostics.summaries}
+    expected_h = abs(base_h - refined_h) / (prior.h_max - prior.h_min)
+    expected_p = abs(base_p - refined_p) / (prior.p_max - prior.p_min)
 
-    assert changes["h"].mean > 0.0
-    assert changes["p"].mean > 0.0
+    assert changes["h"].mean == expected_h
+    assert changes["p"].mean == expected_p
     assert changes["alpha"].mean == changes["h"].mean
     assert changes["beta"].mean == changes["p"].mean
+    if direction == "identical":
+        assert changes["h"].mean == 0.0
+        assert changes["p"].mean == 0.0
+    else:
+        assert changes["h"].mean > 0.0
+        assert changes["p"].mean > 0.0
 
 
 def test_exact_posterior_rejects_cross_design_counts_before_backend_calls() -> None:
