@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import base64
+import csv
 import hashlib
+import io
 import json
 import math
 import os
+import re
 import shutil
 import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 import unicodedata
 import zipfile
 from collections.abc import Iterable
+from dataclasses import dataclass
 from email import policy
 from email.parser import BytesParser
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -30,11 +36,22 @@ PROJECT_VERSION = "0.1.0"
 EXPECTED_WHEEL = f"{PROJECT_NAME}-{PROJECT_VERSION}-py3-none-any.whl"
 EXPECTED_SDIST = f"{PROJECT_NAME}-{PROJECT_VERSION}.tar.gz"
 EXPECTED_SDIST_ROOT = f"{PROJECT_NAME}-{PROJECT_VERSION}"
+DIST_INFO = f"{PROJECT_NAME}-{PROJECT_VERSION}.dist-info"
 QUANTITIES = {"h", "p", "alpha", "beta", "tau_plus", "tau_minus"}
 VENV_TIMEOUT_SECONDS = 180.0
 INSTALL_TIMEOUT_SECONDS = 600.0
 IMPORT_TIMEOUT_SECONDS = 60.0
 EXAMPLE_TIMEOUT_SECONDS = 180.0
+MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
+MAX_METADATA_BYTES = 2 * 1024 * 1024
+MAX_RECORD_BYTES = 2 * 1024 * 1024
+MAX_WHEEL_BYTES = 4 * 1024
+EXPECTED_WHEEL_HEADERS = {
+    "Wheel-Version": ["1.0"],
+    "Generator": ["hatchling 1.32.0"],
+    "Root-Is-Purelib": ["true"],
+    "Tag": ["py3-none-any"],
+}
 FORBIDDEN_PARTS = {
     ".planning",
     ".mypy_cache",
@@ -75,36 +92,46 @@ WINDOWS_RESERVED_STEMS = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class FileIdentity:
+    """Trusted byte identity for one source or installed package file."""
+
+    size: int
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveInspection:
+    """Source identities retained after exact archive inspection."""
+
+    package_files: dict[str, FileIdentity]
+    wheel_sha256: str
+    sdist_sha256: str
+
+
 def _archives() -> tuple[Path, Path]:
     if not DIST.is_dir():
         raise RuntimeError(f"distribution directory does not exist: {DIST}")
-    wheels = sorted(path.resolve() for path in DIST.glob("*.whl") if path.is_file())
-    sdists = sorted(
-        path.resolve()
-        for path in DIST.iterdir()
-        if path.is_file() and path.name.endswith(".tar.gz")
-    )
-    if len(wheels) != 1 or len(sdists) != 1:
+    entries = sorted(DIST.iterdir(), key=lambda path: path.name)
+    expected_names = {EXPECTED_WHEEL, EXPECTED_SDIST}
+    if {path.name for path in entries} != expected_names or any(
+        not path.is_file() for path in entries
+    ):
         raise RuntimeError(
-            "dist must contain exactly one wheel and one sdist; "
-            f"found {len(wheels)} wheel(s) and {len(sdists)} sdist(s)"
+            "dist must contain exactly the expected wheel and sdist; "
+            f"found {[path.name for path in entries]!r}"
         )
-    if wheels[0].name != EXPECTED_WHEEL:
-        raise RuntimeError(
-            f"wheel filename must be exactly {EXPECTED_WHEEL!r}; "
-            f"found {wheels[0].name!r}"
-        )
-    if sdists[0].name != EXPECTED_SDIST:
-        raise RuntimeError(
-            f"sdist filename must be exactly {EXPECTED_SDIST!r}; "
-            f"found {sdists[0].name!r}"
-        )
-    for artifact in (*wheels, *sdists):
+    by_name = {path.name: path.resolve() for path in entries}
+    wheel = by_name[EXPECTED_WHEEL]
+    sdist = by_name[EXPECTED_SDIST]
+    for artifact in (wheel, sdist):
         if not artifact.is_relative_to(DIST.resolve()):
             raise RuntimeError(
                 f"artifact escaped the repository dist directory: {artifact}"
             )
-    return wheels[0], sdists[0]
+        if artifact.stat().st_size > MAX_ARCHIVE_BYTES:
+            raise RuntimeError(f"artifact is unreasonably large: {artifact.name}")
+    return wheel, sdist
 
 
 def _validated_archive_path(artifact: Path, name: str, *, subject: str) -> str:
@@ -204,21 +231,261 @@ def _assert_members_safe(
     return tuple(normalized)
 
 
+def _file_identity(content: bytes) -> FileIdentity:
+    return FileIdentity(size=len(content), sha256=hashlib.sha256(content).hexdigest())
+
+
+def _repository_file(path: Path) -> bytes:
+    resolved = path.resolve()
+    if not resolved.is_relative_to(REPOSITORY.resolve()) or path.is_symlink():
+        raise RuntimeError(f"repository manifest contains an unsafe file: {path}")
+    if not path.is_file():
+        raise RuntimeError(f"repository manifest file is missing: {path}")
+    content = path.read_bytes()
+    if len(content) > MAX_METADATA_BYTES:
+        raise RuntimeError(f"repository manifest file is too large: {path}")
+    return content
+
+
+def _repository_package_payload() -> dict[str, bytes]:
+    package_root = REPOSITORY / "src" / PROJECT_NAME
+    payload: dict[str, bytes] = {}
+    for path in sorted(package_root.rglob("*")):
+        if not path.is_file() or "__pycache__" in path.parts:
+            continue
+        name = path.relative_to(package_root).as_posix()
+        _validated_archive_path(path, name, subject="repository package path")
+        payload[name] = _repository_file(path)
+    if not payload or "py.typed" not in payload or "__init__.py" not in payload:
+        raise RuntimeError("repository package manifest is incomplete")
+    return payload
+
+
+def _bounded_zip_read(
+    archive: zipfile.ZipFile,
+    member: zipfile.ZipInfo,
+    *,
+    maximum: int,
+    expected_size: int | None = None,
+) -> bytes:
+    if member.file_size < 0 or member.file_size > maximum:
+        raise RuntimeError(
+            f"wheel member has an invalid size: {member.filename}={member.file_size}"
+        )
+    if expected_size is not None and member.file_size != expected_size:
+        raise RuntimeError(
+            f"wheel member size differs from repository source: {member.filename}"
+        )
+    content = archive.read(member)
+    if len(content) != member.file_size:
+        raise RuntimeError(f"wheel member was truncated: {member.filename}")
+    return content
+
+
+def _bounded_tar_read(
+    archive: tarfile.TarFile,
+    member: tarfile.TarInfo,
+    *,
+    maximum: int,
+    expected_size: int | None = None,
+) -> bytes:
+    if member.size < 0 or member.size > maximum:
+        raise RuntimeError(
+            f"sdist member has an invalid size: {member.name}={member.size}"
+        )
+    if expected_size is not None and member.size != expected_size:
+        raise RuntimeError(
+            f"sdist member size differs from repository source: {member.name}"
+        )
+    extracted = archive.extractfile(member)
+    if extracted is None:
+        raise RuntimeError(f"could not read sdist member: {member.name}")
+    content = extracted.read(member.size + 1)
+    if len(content) != member.size:
+        raise RuntimeError(f"sdist member was truncated: {member.name}")
+    return content
+
+
+def _metadata_body(content: bytes, *, artifact: Path, subject: str) -> bytes:
+    candidates = [
+        (content.find(separator), separator)
+        for separator in (b"\r\n\r\n", b"\n\n")
+        if content.find(separator) >= 0
+    ]
+    if not candidates:
+        raise RuntimeError(f"invalid {subject} body in {artifact.name}")
+    index, separator = min(candidates, key=lambda item: item[0])
+    headers = content[:index]
+    body = content[index + len(separator) :]
+    if not headers or not body:
+        raise RuntimeError(f"invalid {subject} body in {artifact.name}")
+    return body
+
+
+def _canonical_requirement(requirement: str, *, extra: str | None = None) -> str:
+    match = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9._-]*)(.*)", requirement.strip())
+    if match is None or ";" in requirement or "[" in requirement:
+        raise RuntimeError(
+            f"unsupported dependency syntax in pyproject.toml: {requirement!r}"
+        )
+    name, specifiers = match.groups()
+    clauses = [clause.strip() for clause in specifiers.split(",") if clause.strip()]
+    normalized = name + ",".join(sorted(clauses))
+    if extra is not None:
+        normalized += f"; extra == '{extra}'"
+    return normalized
+
+
+def _metadata_expectations() -> tuple[dict[str, list[str]], bytes, bytes]:
+    pyproject_bytes = _repository_file(REPOSITORY / "pyproject.toml")
+    try:
+        document = tomllib.loads(pyproject_bytes.decode("utf-8"))
+        project = document["project"]
+        authors = project["authors"]
+        optional = project.get("optional-dependencies", {})
+    except (KeyError, TypeError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise RuntimeError(
+            "repository pyproject.toml has invalid project metadata"
+        ) from error
+    if project.get("name") != PROJECT_NAME or project.get("version") != PROJECT_VERSION:
+        raise RuntimeError("repository pyproject.toml identity is unexpected")
+    if not isinstance(authors, list) or authors != [{"name": "Moeketsi Mosia"}]:
+        raise RuntimeError("repository pyproject.toml authors are unexpected")
+    dependencies = project.get("dependencies")
+    if not isinstance(dependencies, list) or not all(
+        isinstance(item, str) for item in dependencies
+    ):
+        raise RuntimeError("repository pyproject.toml dependencies are invalid")
+    if not isinstance(optional, dict) or not all(
+        isinstance(name, str)
+        and isinstance(items, list)
+        and all(isinstance(item, str) for item in items)
+        for name, items in optional.items()
+    ):
+        raise RuntimeError(
+            "repository pyproject.toml optional dependencies are invalid"
+        )
+    requirements = [_canonical_requirement(item) for item in dependencies]
+    for extra, items in optional.items():
+        requirements.extend(_canonical_requirement(item, extra=extra) for item in items)
+    license_bytes = _repository_file(REPOSITORY / "LICENSE")
+    expected = {
+        "Metadata-Version": ["2.5"],
+        "Name": [PROJECT_NAME],
+        "Version": [PROJECT_VERSION],
+        "Summary": [str(project["description"])],
+        "Author": ["Moeketsi Mosia"],
+        "License-File": ["LICENSE"],
+        "Requires-Python": [str(project["requires-python"])],
+        "Requires-Dist": requirements,
+        "Provides-Extra": list(optional),
+        "Description-Content-Type": ["text/markdown"],
+    }
+    return expected, _repository_file(REPOSITORY / "README.md"), license_bytes
+
+
 def _validate_metadata(artifact: Path, content: bytes, *, subject: str) -> None:
+    if len(content) > MAX_METADATA_BYTES:
+        raise RuntimeError(f"oversized {subject} in {artifact.name}")
     try:
         metadata = BytesParser(policy=policy.default).parsebytes(content)
     except (TypeError, ValueError) as error:
         raise RuntimeError(f"invalid {subject} in {artifact.name}") from error
-    names = metadata.get_all("Name", failobj=[])
-    versions = metadata.get_all("Version", failobj=[])
-    if names != [PROJECT_NAME]:
+    expected, readme_bytes, license_bytes = _metadata_expectations()
+    expected_headers = set(expected) | {"License"}
+    if set(metadata.keys()) != expected_headers:
         raise RuntimeError(
-            f"{subject} in {artifact.name} has unexpected Name: {names!r}"
+            f"{subject} in {artifact.name} has unexpected metadata headers"
         )
-    if versions != [PROJECT_VERSION]:
-        raise RuntimeError(
-            f"{subject} in {artifact.name} has unexpected Version: {versions!r}"
-        )
+    for name, values in expected.items():
+        actual = [str(value) for value in metadata.get_all(name, failobj=[])]
+        if actual != values:
+            raise RuntimeError(
+                f"{subject} in {artifact.name} has unexpected {name}: {actual!r}"
+            )
+    licenses = [str(value) for value in metadata.get_all("License", failobj=[])]
+    if len(licenses) != 1 or " ".join(licenses[0].split()) != " ".join(
+        license_bytes.decode("utf-8").split()
+    ):
+        raise RuntimeError(f"{subject} in {artifact.name} has unexpected License")
+    metadata_description = _metadata_body(
+        content, artifact=artifact, subject=subject
+    ).replace(b"\r\n", b"\n")
+    repository_description = readme_bytes.replace(b"\r\n", b"\n")
+    if b"\r" in metadata_description or metadata_description != repository_description:
+        raise RuntimeError(f"{subject} in {artifact.name} does not embed README.md")
+
+
+def _validate_wheel_file(artifact: Path, content: bytes) -> None:
+    if len(content) > MAX_WHEEL_BYTES:
+        raise RuntimeError(f"oversized WHEEL in {artifact.name}")
+    try:
+        wheel_metadata = BytesParser(policy=policy.default).parsebytes(content)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError(f"invalid WHEEL in {artifact.name}") from error
+    if set(wheel_metadata.keys()) != set(EXPECTED_WHEEL_HEADERS):
+        raise RuntimeError(f"WHEEL in {artifact.name} has unexpected headers")
+    for name, expected in EXPECTED_WHEEL_HEADERS.items():
+        actual = [str(value) for value in wheel_metadata.get_all(name, failobj=[])]
+        if actual != expected:
+            raise RuntimeError(
+                f"WHEEL in {artifact.name} has unexpected {name}: {actual!r}"
+            )
+    if wheel_metadata.get_payload() not in {"", None}:
+        raise RuntimeError(f"WHEEL in {artifact.name} has an unexpected body")
+
+
+def _record_digest(content: bytes) -> str:
+    encoded = base64.urlsafe_b64encode(hashlib.sha256(content).digest())
+    return encoded.rstrip(b"=").decode("ascii")
+
+
+def _validate_record(
+    artifact: Path,
+    content: bytes,
+    members: dict[str, bytes],
+) -> None:
+    if len(content) > MAX_RECORD_BYTES:
+        raise RuntimeError(f"oversized RECORD in {artifact.name}")
+    record_path = f"{DIST_INFO}/RECORD"
+    try:
+        rows = list(csv.reader(io.StringIO(content.decode("utf-8"), newline="")))
+    except (csv.Error, UnicodeDecodeError) as error:
+        raise RuntimeError(f"invalid RECORD in {artifact.name}") from error
+    if any(len(row) != 3 for row in rows):
+        raise RuntimeError(f"RECORD in {artifact.name} has malformed rows")
+    names = [row[0] for row in rows]
+    try:
+        _assert_members_safe(artifact, names, wheel=False)
+    except RuntimeError as error:
+        raise RuntimeError(f"RECORD in {artifact.name} has unsafe paths") from error
+    if len(names) != len(set(names)) or set(names) != set(members):
+        raise RuntimeError(f"RECORD in {artifact.name} does not cover exact members")
+    for name, digest, size_text in rows:
+        if name == record_path:
+            if digest or size_text:
+                raise RuntimeError(f"RECORD self-entry in {artifact.name} is not empty")
+            continue
+        if not digest.startswith("sha256=") or not size_text.isascii():
+            raise RuntimeError(
+                f"RECORD entry in {artifact.name} is not canonical: {name}"
+            )
+        encoded = digest.removeprefix("sha256=")
+        try:
+            decoded = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        except (ValueError, base64.binascii.Error) as error:
+            raise RuntimeError(
+                f"invalid RECORD digest in {artifact.name}: {name}"
+            ) from error
+        if (
+            len(decoded) != hashlib.sha256().digest_size
+            or base64.urlsafe_b64encode(decoded).rstrip(b"=").decode("ascii") != encoded
+            or encoded != _record_digest(members[name])
+        ):
+            raise RuntimeError(f"RECORD digest mismatch in {artifact.name}: {name}")
+        expected_size = str(len(members[name]))
+        if size_text != expected_size:
+            raise RuntimeError(f"RECORD size mismatch in {artifact.name}: {name}")
 
 
 def _scientific_payloads_match(
@@ -243,12 +510,47 @@ def _scientific_payloads_match(
         )
 
 
-def _inspect_archives(wheel: Path, sdist: Path) -> None:
+def _inspect_archives(wheel: Path, sdist: Path) -> ArchiveInspection:
+    for artifact in (wheel, sdist):
+        if not artifact.is_file() or artifact.stat().st_size > MAX_ARCHIVE_BYTES:
+            raise RuntimeError(f"artifact is missing or unreasonably large: {artifact}")
+    repository_payload = _repository_package_payload()
+    expected_metadata, readme_bytes, license_bytes = _metadata_expectations()
+    del expected_metadata
+    repository_sdist_payload = {
+        ".gitignore": _repository_file(REPOSITORY / ".gitignore"),
+        "LICENSE": license_bytes,
+        "README.md": readme_bytes,
+        "pyproject.toml": _repository_file(REPOSITORY / "pyproject.toml"),
+        "uv.lock": _repository_file(REPOSITORY / "uv.lock"),
+        f"examples/{EXAMPLE.name}": _repository_file(EXAMPLE),
+    }
+    wheel_package_names = {
+        f"{PROJECT_NAME}/{name}": content
+        for name, content in repository_payload.items()
+    }
+    metadata_path = f"{DIST_INFO}/METADATA"
+    wheel_path = f"{DIST_INFO}/WHEEL"
+    license_path = f"{DIST_INFO}/licenses/LICENSE"
+    record_path = f"{DIST_INFO}/RECORD"
+    expected_wheel_names = set(wheel_package_names) | {
+        metadata_path,
+        wheel_path,
+        license_path,
+        record_path,
+    }
+
     with zipfile.ZipFile(wheel) as archive:
         wheel_infos = archive.infolist()
         wheel_names = _assert_members_safe(
             wheel, (member.filename for member in wheel_infos), wheel=True
         )
+        if set(wheel_names) != expected_wheel_names:
+            raise RuntimeError(
+                "wheel members do not match the exact source-bound manifest: "
+                f"missing={sorted(expected_wheel_names - set(wheel_names))!r}, "
+                f"unexpected={sorted(set(wheel_names) - expected_wheel_names)!r}"
+            )
         for member in wheel_infos:
             unix_type = (member.external_attr >> 16) & 0o170000
             if member.flag_bits & 0x1:
@@ -256,12 +558,6 @@ def _inspect_archives(wheel: Path, sdist: Path) -> None:
                     f"encrypted wheel member in {wheel.name}: {member.filename}"
                 )
             if unix_type == stat.S_IFLNK:
-                target = archive.read(member).decode("utf-8", errors="strict")
-                _validated_archive_path(
-                    wheel,
-                    target,
-                    subject=f"link target for {member.filename}",
-                )
                 raise RuntimeError(
                     f"symbolic links are forbidden in {wheel.name}: {member.filename}"
                 )
@@ -269,22 +565,51 @@ def _inspect_archives(wheel: Path, sdist: Path) -> None:
                 raise RuntimeError(
                     f"non-regular wheel member in {wheel.name}: {member.filename}"
                 )
-
-        metadata_path = f"{PROJECT_NAME}-{PROJECT_VERSION}.dist-info/METADATA"
-        if wheel_names.count(metadata_path) != 1:
-            raise RuntimeError(
-                f"{wheel.name} must contain exactly one canonical METADATA file"
-            )
+        info_by_name = {member.filename: member for member in wheel_infos}
+        wheel_members: dict[str, bytes] = {}
+        for name, member in info_by_name.items():
+            if name in wheel_package_names:
+                expected = wheel_package_names[name]
+                content = _bounded_zip_read(
+                    archive,
+                    member,
+                    maximum=MAX_METADATA_BYTES,
+                    expected_size=len(expected),
+                )
+                if content != expected:
+                    raise RuntimeError(
+                        f"wheel package member differs from repository source: {name}"
+                    )
+            elif name == license_path:
+                content = _bounded_zip_read(
+                    archive,
+                    member,
+                    maximum=MAX_METADATA_BYTES,
+                    expected_size=len(license_bytes),
+                )
+                if content != license_bytes:
+                    raise RuntimeError("wheel license differs from repository LICENSE")
+            else:
+                maximum = (
+                    MAX_WHEEL_BYTES
+                    if name == wheel_path
+                    else MAX_RECORD_BYTES
+                    if name == record_path
+                    else MAX_METADATA_BYTES
+                )
+                content = _bounded_zip_read(archive, member, maximum=maximum)
+            wheel_members[name] = content
         _validate_metadata(
-            wheel,
-            archive.read(metadata_path),
-            subject="wheel METADATA",
+            wheel, wheel_members[metadata_path], subject="wheel METADATA"
         )
+        _validate_wheel_file(wheel, wheel_members[wheel_path])
+        _validate_record(wheel, wheel_members[record_path], wheel_members)
         wheel_payload = {
-            name.removeprefix(f"{PROJECT_NAME}/"): archive.read(name)
-            for name in wheel_names
+            name.removeprefix(f"{PROJECT_NAME}/"): content
+            for name, content in wheel_members.items()
             if name.startswith(f"{PROJECT_NAME}/")
         }
+
     with tarfile.open(sdist, mode="r:*") as archive:
         members = archive.getmembers()
         sdist_names = _assert_members_safe(
@@ -308,46 +633,69 @@ def _inspect_archives(wheel: Path, sdist: Path) -> None:
                 raise RuntimeError(
                     f"unsupported archive member in {sdist.name}: {member.name}"
                 )
-
         expected_prefix = f"{EXPECTED_SDIST_ROOT}/"
         if any(not name.startswith(expected_prefix) for name in sdist_names):
             raise RuntimeError(
                 f"{sdist.name} contains a member outside {EXPECTED_SDIST_ROOT!r}"
             )
-        metadata_path = f"{EXPECTED_SDIST_ROOT}/PKG-INFO"
-        if sdist_names.count(metadata_path) != 1:
+        package_prefix = f"{EXPECTED_SDIST_ROOT}/src/{PROJECT_NAME}/"
+        sdist_package_names = {
+            f"{package_prefix}{name}": content
+            for name, content in repository_payload.items()
+        }
+        sdist_bound_names = {
+            f"{EXPECTED_SDIST_ROOT}/{name}": content
+            for name, content in repository_sdist_payload.items()
+        }
+        pkg_info_path = f"{EXPECTED_SDIST_ROOT}/PKG-INFO"
+        expected_sdist_names = (
+            set(sdist_package_names) | set(sdist_bound_names) | {pkg_info_path}
+        )
+        if set(sdist_names) != expected_sdist_names or any(
+            not member.isfile() for member in members
+        ):
             raise RuntimeError(
-                f"{sdist.name} must contain exactly one canonical PKG-INFO file"
+                "sdist members do not match the exact source-bound manifest: "
+                f"missing={sorted(expected_sdist_names - set(sdist_names))!r}, "
+                f"unexpected={sorted(set(sdist_names) - expected_sdist_names)!r}"
             )
-        metadata_member = archive.extractfile(metadata_path)
-        if metadata_member is None:
-            raise RuntimeError(f"could not read PKG-INFO from {sdist.name}")
+        member_by_name = {member.name: member for member in members}
+        sdist_members: dict[str, bytes] = {}
+        for name, member in member_by_name.items():
+            expected = sdist_package_names.get(name, sdist_bound_names.get(name))
+            content = _bounded_tar_read(
+                archive,
+                member,
+                maximum=MAX_METADATA_BYTES,
+                expected_size=None if expected is None else len(expected),
+            )
+            if expected is not None and content != expected:
+                raise RuntimeError(
+                    f"sdist member differs from repository source: {name}"
+                )
+            sdist_members[name] = content
         _validate_metadata(
             sdist,
-            metadata_member.read(),
+            sdist_members[pkg_info_path],
             subject="sdist PKG-INFO",
         )
-        example_path = f"{EXPECTED_SDIST_ROOT}/examples/{EXAMPLE.name}"
-        if sdist_names.count(example_path) != 1:
-            raise RuntimeError(
-                f"{sdist.name} does not contain the executable public example"
-            )
-        example_member = archive.extractfile(example_path)
-        if example_member is None or example_member.read() != EXAMPLE.read_bytes():
-            raise RuntimeError(
-                f"{sdist.name} public example differs from the repository example"
-            )
-        package_prefix = f"{EXPECTED_SDIST_ROOT}/src/{PROJECT_NAME}/"
-        sdist_payload: dict[str, bytes] = {}
-        for name in sdist_names:
-            if not name.startswith(package_prefix):
-                continue
-            member = archive.extractfile(name)
-            if member is None:
-                raise RuntimeError(f"could not read package member in sdist: {name}")
-            sdist_payload[name.removeprefix(package_prefix)] = member.read()
+        if sdist_members[pkg_info_path] != wheel_members[metadata_path]:
+            raise RuntimeError("wheel METADATA and sdist PKG-INFO differ byte-for-byte")
+        sdist_payload = {
+            name.removeprefix(package_prefix): content
+            for name, content in sdist_members.items()
+            if name.startswith(package_prefix)
+        }
 
     _scientific_payloads_match(wheel_payload, sdist_payload)
+    return ArchiveInspection(
+        package_files={
+            name: _file_identity(content)
+            for name, content in repository_payload.items()
+        },
+        wheel_sha256=hashlib.sha256(wheel.read_bytes()).hexdigest(),
+        sdist_sha256=hashlib.sha256(sdist.read_bytes()).hexdigest(),
+    )
 
 
 def _venv_python(environment: Path) -> Path:

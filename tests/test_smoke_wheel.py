@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import csv
 import io
 import math
 import os
@@ -18,14 +19,80 @@ import pytest
 
 from scripts import smoke_wheel
 
-METADATA = b"Metadata-Version: 2.4\nName: stableboundary\nVersion: 0.1.0\n"
+
+def _metadata_bytes() -> bytes:
+    expected, readme, license_content = smoke_wheel._metadata_expectations()
+    lines: list[bytes] = []
+    ordered = (
+        "Metadata-Version",
+        "Name",
+        "Version",
+        "Summary",
+        "Author",
+    )
+    for name in ordered:
+        lines.append(f"{name}: {expected[name][0]}".encode())
+    license_lines = license_content.rstrip(b"\n").split(b"\n")
+    lines.append(b"License: " + license_lines[0])
+    lines.extend(b"        " + line for line in license_lines[1:])
+    for name in (
+        "License-File",
+        "Requires-Python",
+        "Requires-Dist",
+        "Provides-Extra",
+        "Description-Content-Type",
+    ):
+        lines.extend(f"{name}: {value}".encode() for value in expected[name])
+    return b"\n".join(lines) + b"\n\n" + readme
 
 
-def _write_minimal_wheel(path: Path) -> None:
+METADATA = _metadata_bytes()
+WHEEL = (
+    b"Wheel-Version: 1.0\n"
+    b"Generator: hatchling 1.32.0\n"
+    b"Root-Is-Purelib: true\n"
+    b"Tag: py3-none-any\n\n"
+)
+
+
+def _wheel_members() -> dict[str, bytes]:
+    package = smoke_wheel._repository_package_payload()
+    return {
+        **{f"stableboundary/{name}": content for name, content in package.items()},
+        f"{smoke_wheel.DIST_INFO}/METADATA": METADATA,
+        f"{smoke_wheel.DIST_INFO}/WHEEL": WHEEL,
+        f"{smoke_wheel.DIST_INFO}/licenses/LICENSE": (
+            smoke_wheel.REPOSITORY / "LICENSE"
+        ).read_bytes(),
+    }
+
+
+def _record_bytes(members: dict[str, bytes]) -> bytes:
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    for name, content in members.items():
+        writer.writerow(
+            [name, f"sha256={smoke_wheel._record_digest(content)}", len(content)]
+        )
+    writer.writerow([f"{smoke_wheel.DIST_INFO}/RECORD", "", ""])
+    return output.getvalue().encode()
+
+
+def _write_minimal_wheel(
+    path: Path,
+    *,
+    additions: dict[str, bytes] | None = None,
+    overrides: dict[str, bytes] | None = None,
+    record_override: bytes | None = None,
+) -> None:
+    members = _wheel_members()
+    members.update(overrides or {})
+    members.update(additions or {})
+    record = _record_bytes(members) if record_override is None else record_override
     with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr("stableboundary/py.typed", "")
-        archive.writestr("stableboundary/core.py", "VALUE = 1\n")
-        archive.writestr("stableboundary-0.1.0.dist-info/METADATA", METADATA)
+        for name, content in members.items():
+            archive.writestr(name, content)
+        archive.writestr(f"{smoke_wheel.DIST_INFO}/RECORD", record)
 
 
 def _add_tar_bytes(archive: tarfile.TarFile, name: str, content: bytes) -> None:
@@ -34,22 +101,37 @@ def _add_tar_bytes(archive: tarfile.TarFile, name: str, content: bytes) -> None:
     archive.addfile(member, io.BytesIO(content))
 
 
-def _write_minimal_sdist(path: Path, *, example: bytes | None = None) -> None:
-    example_content = smoke_wheel.EXAMPLE.read_bytes() if example is None else example
+def _write_minimal_sdist(
+    path: Path,
+    *,
+    example: bytes | None = None,
+    additions: dict[str, bytes] | None = None,
+    overrides: dict[str, bytes] | None = None,
+) -> None:
+    root = smoke_wheel.EXPECTED_SDIST_ROOT
+    package = smoke_wheel._repository_package_payload()
+    members = {
+        f"{root}/uv.lock": (smoke_wheel.REPOSITORY / "uv.lock").read_bytes(),
+        f"{root}/examples/{smoke_wheel.EXAMPLE.name}": (
+            smoke_wheel.EXAMPLE.read_bytes() if example is None else example
+        ),
+        **{
+            f"{root}/src/stableboundary/{name}": content
+            for name, content in package.items()
+        },
+        f"{root}/.gitignore": (smoke_wheel.REPOSITORY / ".gitignore").read_bytes(),
+        f"{root}/LICENSE": (smoke_wheel.REPOSITORY / "LICENSE").read_bytes(),
+        f"{root}/README.md": (smoke_wheel.REPOSITORY / "README.md").read_bytes(),
+        f"{root}/pyproject.toml": (
+            smoke_wheel.REPOSITORY / "pyproject.toml"
+        ).read_bytes(),
+        f"{root}/PKG-INFO": METADATA,
+    }
+    members.update(overrides or {})
+    members.update(additions or {})
     with tarfile.open(path, "w:gz") as archive:
-        root = smoke_wheel.EXPECTED_SDIST_ROOT
-        _add_tar_bytes(archive, f"{root}/PKG-INFO", METADATA)
-        _add_tar_bytes(archive, f"{root}/src/stableboundary/py.typed", b"")
-        _add_tar_bytes(
-            archive,
-            f"{root}/src/stableboundary/core.py",
-            b"VALUE = 1\n",
-        )
-        _add_tar_bytes(
-            archive,
-            f"{root}/examples/{smoke_wheel.EXAMPLE.name}",
-            example_content,
-        )
+        for name, content in members.items():
+            _add_tar_bytes(archive, name, content)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX venv launchers are symlinks")
@@ -299,7 +381,7 @@ def test_sdist_rejects_even_canonical_links(tmp_path: Path) -> None:
         smoke_wheel._inspect_archives(wheel, sdist)
 
 
-def test_sdist_discovery_ignores_zip_archives(
+def test_dist_discovery_rejects_every_extra_member(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / smoke_wheel.EXPECTED_WHEEL).touch()
@@ -308,10 +390,8 @@ def test_sdist_discovery_ignores_zip_archives(
     (tmp_path / "unexpected.zip").touch()
     monkeypatch.setattr(smoke_wheel, "DIST", tmp_path)
 
-    wheel, sdist = smoke_wheel._archives()
-
-    assert wheel == (tmp_path / smoke_wheel.EXPECTED_WHEEL).resolve()
-    assert sdist == expected_sdist.resolve()
+    with pytest.raises(RuntimeError, match="exactly the expected"):
+        smoke_wheel._archives()
 
 
 @pytest.mark.parametrize(
@@ -339,21 +419,33 @@ def test_archive_discovery_requires_canonical_name_and_version(
     (tmp_path / sdist_name).touch()
     monkeypatch.setattr(smoke_wheel, "DIST", tmp_path)
 
-    with pytest.raises(RuntimeError, match=expected_message):
+    with pytest.raises(RuntimeError, match="exactly the expected"):
         smoke_wheel._archives()
 
 
 @pytest.mark.parametrize(
     ("metadata", "message"),
     [
-        (b"Name: substitute\nVersion: 0.1.0\n", "unexpected Name"),
-        (b"Name: stableboundary\nVersion: 9.9.9\n", "unexpected Version"),
         (
-            b"Name: stableboundary\nName: substitute\nVersion: 0.1.0\n",
+            METADATA.replace(b"Name: stableboundary\n", b"Name: substitute\n"),
             "unexpected Name",
         ),
         (
-            b"Name: stableboundary\nVersion: 0.1.0\nVersion: 9.9.9\n",
+            METADATA.replace(b"Version: 0.1.0\n", b"Version: 9.9.9\n"),
+            "unexpected Version",
+        ),
+        (
+            METADATA.replace(
+                b"Name: stableboundary\n",
+                b"Name: stableboundary\nName: substitute\n",
+            ),
+            "unexpected Name",
+        ),
+        (
+            METADATA.replace(
+                b"Version: 0.1.0\n",
+                b"Version: 0.1.0\nVersion: 9.9.9\n",
+            ),
             "unexpected Version",
         ),
     ],
@@ -392,6 +484,211 @@ def test_minimal_canonical_archives_pass_identity_and_payload_checks(
     _write_minimal_sdist(sdist)
 
     smoke_wheel._inspect_archives(wheel, sdist)
+
+
+@pytest.mark.parametrize(
+    "member",
+    [
+        "sitecustomize.py",
+        "payload.pth",
+        "stableboundary-0.1.0.data/scripts/runner.py",
+        "substitute-0.1.0.dist-info/METADATA",
+        "top_level_module.py",
+        "secret.env",
+    ],
+)
+def test_wheel_rejects_every_unknown_member(tmp_path: Path, member: str) -> None:
+    wheel = tmp_path / smoke_wheel.EXPECTED_WHEEL
+    sdist = tmp_path / smoke_wheel.EXPECTED_SDIST
+    _write_minimal_wheel(wheel, additions={member: b"hostile\n"})
+    _write_minimal_sdist(sdist)
+
+    with pytest.raises(RuntimeError, match="exact source-bound manifest"):
+        smoke_wheel._inspect_archives(wheel, sdist)
+
+
+@pytest.mark.parametrize(
+    "member",
+    [
+        "secret.env",
+        "dist/stale.whl",
+        "sitecustomize.py",
+        "tests/test_leak.py",
+    ],
+)
+def test_sdist_rejects_every_unknown_member(tmp_path: Path, member: str) -> None:
+    wheel = tmp_path / smoke_wheel.EXPECTED_WHEEL
+    sdist = tmp_path / smoke_wheel.EXPECTED_SDIST
+    _write_minimal_wheel(wheel)
+    root = smoke_wheel.EXPECTED_SDIST_ROOT
+    _write_minimal_sdist(sdist, additions={f"{root}/{member}": b"hostile\n"})
+
+    with pytest.raises(RuntimeError):
+        smoke_wheel._inspect_archives(wheel, sdist)
+
+
+@pytest.mark.parametrize("archive_kind", ["wheel", "sdist"])
+def test_archives_reject_stale_repository_package_payload(
+    tmp_path: Path, archive_kind: str
+) -> None:
+    wheel = tmp_path / smoke_wheel.EXPECTED_WHEEL
+    sdist = tmp_path / smoke_wheel.EXPECTED_SDIST
+    relative = "stableboundary/__init__.py"
+    source = (smoke_wheel.REPOSITORY / "src" / relative).read_bytes()
+    stale = bytes([source[0] ^ 1]) + source[1:]
+    wheel_override = {relative: stale} if archive_kind == "wheel" else None
+    root = smoke_wheel.EXPECTED_SDIST_ROOT
+    sdist_override = (
+        {f"{root}/src/{relative}": stale} if archive_kind == "sdist" else None
+    )
+    _write_minimal_wheel(wheel, overrides=wheel_override)
+    _write_minimal_sdist(sdist, overrides=sdist_override)
+
+    with pytest.raises(RuntimeError, match="differs from repository source"):
+        smoke_wheel._inspect_archives(wheel, sdist)
+
+
+def test_sdist_rejects_substituted_pyproject(tmp_path: Path) -> None:
+    wheel = tmp_path / smoke_wheel.EXPECTED_WHEEL
+    sdist = tmp_path / smoke_wheel.EXPECTED_SDIST
+    _write_minimal_wheel(wheel)
+    root = smoke_wheel.EXPECTED_SDIST_ROOT
+    original = (smoke_wheel.REPOSITORY / "pyproject.toml").read_bytes()
+    substituted = original.replace(
+        b'name = "stableboundary"', b'name = "substitution!!"'
+    )
+    _write_minimal_sdist(
+        sdist,
+        overrides={f"{root}/pyproject.toml": substituted},
+    )
+
+    with pytest.raises(RuntimeError, match="pyproject.toml"):
+        smoke_wheel._inspect_archives(wheel, sdist)
+
+
+def _hostile_record(kind: str) -> bytes:
+    valid = _record_bytes(_wheel_members()).decode()
+    lines = valid.splitlines()
+    if kind == "missing":
+        lines.pop(0)
+    elif kind == "duplicate":
+        lines.insert(1, lines[0])
+    elif kind == "digest":
+        fields = lines[0].split(",")
+        fields[1] = "sha256=" + "A" * 43
+        lines[0] = ",".join(fields)
+    elif kind == "size":
+        fields = lines[0].split(",")
+        fields[2] = str(int(fields[2]) + 1)
+        lines[0] = ",".join(fields)
+    elif kind == "self":
+        lines[-1] = f"{smoke_wheel.DIST_INFO}/RECORD,sha256={'A' * 43},1"
+    elif kind == "extra":
+        lines.insert(-1, f"secret.env,sha256={'A' * 43},1")
+    else:  # pragma: no cover - test helper guard
+        raise AssertionError(kind)
+    return ("\n".join(lines) + "\n").encode()
+
+
+@pytest.mark.parametrize(
+    "kind", ["missing", "duplicate", "digest", "size", "self", "extra"]
+)
+def test_wheel_record_is_an_exact_content_manifest(tmp_path: Path, kind: str) -> None:
+    wheel = tmp_path / smoke_wheel.EXPECTED_WHEEL
+    sdist = tmp_path / smoke_wheel.EXPECTED_SDIST
+    _write_minimal_wheel(wheel, record_override=_hostile_record(kind))
+    _write_minimal_sdist(sdist)
+
+    with pytest.raises(RuntimeError, match="RECORD"):
+        smoke_wheel._inspect_archives(wheel, sdist)
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        (b"Wheel-Version: 1.0", b"Wheel-Version: 1.1"),
+        (b"Generator: hatchling 1.32.0", b"Generator: hostile 9.9"),
+        (b"Root-Is-Purelib: true", b"Root-Is-Purelib: false"),
+        (b"Tag: py3-none-any", b"Tag: cp314-cp314-win_amd64"),
+    ],
+)
+def test_wheel_file_requires_exact_pure_python_build_contract(
+    old: bytes, new: bytes
+) -> None:
+    with pytest.raises(RuntimeError, match="WHEEL"):
+        smoke_wheel._validate_wheel_file(
+            Path(smoke_wheel.EXPECTED_WHEEL), WHEEL.replace(old, new)
+        )
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        (
+            b"Summary: Auditable Bayesian inference",
+            b"Summary: Poisoned inference",
+            "Summary",
+        ),
+        (b"Author: Moeketsi Mosia", b"Author: Substitute", "Author"),
+        (b"License-File: LICENSE", b"License-File: SECRET", "License-File"),
+        (b"Requires-Python: >=3.12", b"Requires-Python: >=3.9", "Requires-Python"),
+        (b"Requires-Dist: numpy>=2.2", b"Requires-Dist: numpy", "Requires-Dist"),
+        (b"Provides-Extra: dev", b"Provides-Extra: hostile", "Provides-Extra"),
+        (
+            b"Description-Content-Type: text/markdown",
+            b"Description-Content-Type: text/plain",
+            "Description-Content-Type",
+        ),
+    ],
+)
+def test_metadata_binds_complete_pyproject_contract(
+    old: bytes, new: bytes, message: str
+) -> None:
+    with pytest.raises(RuntimeError, match=message):
+        smoke_wheel._validate_metadata(
+            Path(smoke_wheel.EXPECTED_WHEEL),
+            METADATA.replace(old, new),
+            subject="METADATA",
+        )
+
+
+def test_metadata_rejects_poison_header_and_readme_payload() -> None:
+    artifact = Path(smoke_wheel.EXPECTED_WHEEL)
+    with pytest.raises(RuntimeError, match="headers"):
+        smoke_wheel._validate_metadata(
+            artifact,
+            METADATA.replace(
+                b"Name: stableboundary\n", b"X-Poison: yes\nName: stableboundary\n"
+            ),
+            subject="METADATA",
+        )
+    with pytest.raises(RuntimeError, match="README"):
+        smoke_wheel._validate_metadata(
+            artifact,
+            METADATA + b"poison",
+            subject="METADATA",
+        )
+
+
+def test_wheel_metadata_and_sdist_pkg_info_require_byte_parity(
+    tmp_path: Path,
+) -> None:
+    wheel = tmp_path / smoke_wheel.EXPECTED_WHEEL
+    sdist = tmp_path / smoke_wheel.EXPECTED_SDIST
+    lf_metadata = METADATA.replace(b"\r\n", b"\n")
+    crlf_metadata = lf_metadata.replace(b"\n", b"\r\n")
+    _write_minimal_wheel(
+        wheel,
+        overrides={f"{smoke_wheel.DIST_INFO}/METADATA": lf_metadata},
+    )
+    root = smoke_wheel.EXPECTED_SDIST_ROOT
+    _write_minimal_sdist(
+        sdist,
+        overrides={f"{root}/PKG-INFO": crlf_metadata},
+    )
+
+    with pytest.raises(RuntimeError, match="byte-for-byte"):
+        smoke_wheel._inspect_archives(wheel, sdist)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows extraction semantics")
