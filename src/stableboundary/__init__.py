@@ -11,14 +11,27 @@ from importlib.metadata import PackageNotFoundError, version
 from ._exceptions import (
     ConvergenceError,
     InfiniteMomentError,
+    InfiniteVarianceError,
     NumericalProbabilityError,
     StableBoundaryError,
     UnidentifiedParameterError,
     ValidationError,
 )
+from .api import fit_known_nuisance
 from .cells import CellCounts, CellProbabilities
 from .design import KnownNuisance, LocalDesign, LocalPrior, NuisanceMode
 from .parameters import LocalCoordinates, SignedTailGap, StableParams
+from .posterior import PosteriorGrid, QuadratureConfig
+from .result import (
+    CredibleInterval,
+    ExpectedExceedanceCounts,
+    IdentificationDiagnostics,
+    KnownNuisanceFit,
+    ParameterSummary,
+    PosteriorPredictiveSample,
+    PredictiveQuantileEstimate,
+    SignedTailPrediction,
+)
 from .simulation import simulate
 
 try:
@@ -30,18 +43,30 @@ __all__ = [
     "CellCounts",
     "CellProbabilities",
     "ConvergenceError",
+    "CredibleInterval",
+    "ExpectedExceedanceCounts",
+    "IdentificationDiagnostics",
     "InfiniteMomentError",
+    "InfiniteVarianceError",
     "KnownNuisance",
+    "KnownNuisanceFit",
     "LocalCoordinates",
     "LocalDesign",
     "LocalPrior",
     "NumericalProbabilityError",
     "NuisanceMode",
+    "ParameterSummary",
+    "PosteriorGrid",
+    "PosteriorPredictiveSample",
+    "PredictiveQuantileEstimate",
+    "QuadratureConfig",
     "SignedTailGap",
+    "SignedTailPrediction",
     "StableBoundaryError",
     "StableParams",
     "UnidentifiedParameterError",
     "ValidationError",
     "__version__",
+    "fit_known_nuisance",
     "simulate",
 ]

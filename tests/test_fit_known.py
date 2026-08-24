@@ -6,6 +6,8 @@ import numpy as np
 import pytest
 from numpy.typing import ArrayLike
 
+import stableboundary.posterior as posterior_module
+from stableboundary import fit_known_nuisance
 from stableboundary._exceptions import ConvergenceError
 from stableboundary.backends import BackendMetadata, ScipyS0Backend
 from stableboundary.cells import CellCounts
@@ -175,3 +177,45 @@ def test_guarded_scipy_default_posterior_integration() -> None:
     assert posterior.refinement.converged
     assert posterior.refinement.joint_total_variation <= 0.002
     assert posterior.backend_method == "scipy-piecewise-s0-direct-log-tails"
+
+
+def test_fit_known_returns_finite_six_quantity_summary_and_json_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    monkeypatch.setattr(posterior_module, "ScipyS0Backend", _AnalyticBackend)
+    design = LocalDesign.from_sample_size(128)
+    observations = np.zeros(design.n)
+    observations[0] = design.threshold + 1.0
+    observations[1] = -design.threshold - 1.0
+    fit = fit_known_nuisance(
+        observations,
+        loc=0.0,
+        scale=1.0,
+        design=design,
+        provenance="independent calibration",
+    )
+    assert fit.status == "research_uncertified"
+    assert fit.r == design.r
+    parameters = fit.summary()["parameters"]
+    assert isinstance(parameters, dict)
+    assert set(parameters) == {"h", "p", "alpha", "beta", "tau_plus", "tau_minus"}
+    for value in parameters.values():
+        assert isinstance(value, dict)
+        assert np.isfinite(value["mean"])
+        assert np.isfinite(value["median"])
+    encoded = json.dumps(fit.audit_record(), allow_nan=False)
+    assert "research_uncertified" in encoded
+    assert "independent calibration" in encoded
+
+
+def test_fit_known_rejects_observation_count_mismatch() -> None:
+    design = LocalDesign.from_sample_size(16)
+    with pytest.raises(Exception, match="observation count"):
+        fit_known_nuisance(
+            np.zeros(15),
+            loc=0.0,
+            scale=1.0,
+            design=design,
+        )

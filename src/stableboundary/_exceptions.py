@@ -25,3 +25,7 @@ class ConvergenceError(StableBoundaryError, ArithmeticError):
 
 class InfiniteMomentError(StableBoundaryError, ValueError):
     """Raised when a requested stable-law moment does not exist."""
+
+
+class InfiniteVarianceError(InfiniteMomentError):
+    """Raised when posterior support includes stable laws with infinite variance."""
