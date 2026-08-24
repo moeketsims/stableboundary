@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   package:
-    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    name: Latest / ${{ matrix.os }} / Python ${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -24,8 +24,8 @@ jobs:
         python-version: ["3.12", "3.13", "3.14"]
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -37,8 +37,10 @@ jobs:
         run: python -m ruff format --check .
       - name: Strict type check
         run: python -m mypy src
-      - name: Ordinary tests
-        run: python -m pytest -q -m "not installed"
+      - name: Ordinary tests with branch coverage
+        run: python -m coverage run --branch -m pytest -q -m "not installed"
+      - name: Enforce branch coverage floor
+        run: python -m coverage report --fail-under=80
       - name: Build wheel and source distribution
         run: python -m build
       - name: Validate distribution metadata
@@ -47,3 +49,63 @@ jobs:
         run: python -m check_wheel_contents dist/*.whl
       - name: Install and exercise both archives
         run: python -m pytest -q tests/test_installed_package.py -m installed
+
+  minimum:
+    name: Minimum runtime dependencies / Linux / Python 3.12
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install declared minima and development tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy==2.2.0" "scipy==1.18.0"
+          python -m pip install -e ".[dev]"
+          python -m pip check
+      - name: Prove minimum versions were retained
+        run: >-
+          python -c "import numpy, scipy;
+          assert numpy.__version__ == '2.2.0', numpy.__version__;
+          assert scipy.__version__ == '1.18.0', scipy.__version__"
+      - name: Minimum-version tests with branch coverage
+        run: python -m coverage run --branch -m pytest -q -m "not installed"
+      - name: Enforce branch coverage floor
+        run: python -m coverage report --fail-under=80
+      - name: Build and validate metadata
+        run: |
+          python -m build
+          python -m twine check dist/*
+          python -m check_wheel_contents dist/*.whl
+
+  locked:
+    name: Locked developer environment / Linux / Python 3.13
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install uv frontend
+        run: python -m pip install "uv==0.12.5"
+      - name: Sync exactly the committed lock
+        run: uv sync --extra dev --locked
+      - name: Locked lint, formatting, and types
+        run: |
+          uv run --frozen ruff check .
+          uv run --frozen ruff format --check .
+          uv run --frozen mypy src
+      - name: Locked tests with branch coverage
+        run: uv run --frozen coverage run --branch -m pytest -q -m "not installed"
+      - name: Enforce branch coverage floor
+        run: uv run --frozen coverage report --fail-under=80
+      - name: Locked build and metadata validation
+        run: |
+          uv run --frozen python -m build
+          uv run --frozen twine check dist/*
+          uv run --frozen check-wheel-contents dist/*.whl

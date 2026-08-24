@@ -809,3 +809,31 @@ def test_stage_subprocess_timeout_is_reported(
             stage="installation",
             timeout_seconds=17.0,
         )
+
+
+def test_repository_reproducibility_contract_is_committed() -> None:
+    pyproject = (smoke_wheel.REPOSITORY / "pyproject.toml").read_text(encoding="utf-8")
+    readme = (smoke_wheel.REPOSITORY / "README.md").read_text(encoding="utf-8")
+    lock = smoke_wheel.REPOSITORY / "uv.lock"
+
+    assert '"/examples/known_nuisance_fit.py"' in pyproject
+    assert '"/uv.lock"' in pyproject
+    assert "fail_under = 80" in pyproject
+    assert lock.is_file() and lock.stat().st_size > 0
+    assert "Wheel users do not need repository-only modules" in readme
+    assert "uv sync --extra dev --locked" in readme
+
+
+def test_ci_pins_actions_and_tests_latest_minimum_and_locked_environments() -> None:
+    workflow = (smoke_wheel.REPOSITORY / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in workflow
+    assert "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97" in workflow
+    assert "actions/checkout@v" not in workflow
+    assert "actions/setup-python@v" not in workflow
+    assert '"numpy==2.2.0" "scipy==1.18.0"' in workflow
+    assert "uv sync --extra dev --locked" in workflow
+    assert "coverage report --fail-under=80" in workflow
+    assert "os: [ubuntu-latest, windows-latest, macos-latest]" in workflow

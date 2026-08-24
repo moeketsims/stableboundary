@@ -98,15 +98,16 @@ printed digits as a cross-version proof certificate.
 Run the checks in this order from the repository root:
 
 ```console
-python -m pip install -e ".[dev]"
-python -m ruff check .
-python -m ruff format --check .
-python -m mypy src
-python -m pytest -q -m "not installed"
-python -m build
-python -m twine check dist/*
-python -m check_wheel_contents dist/*.whl
-python -m pytest -q tests/test_installed_package.py -m installed
+uv sync --extra dev --locked
+uv run --frozen ruff check .
+uv run --frozen ruff format --check .
+uv run --frozen mypy src
+uv run --frozen coverage run --branch -m pytest -q -m "not installed"
+uv run --frozen coverage report --fail-under=80
+uv run --frozen python -m build
+uv run --frozen twine check dist/*
+uv run --frozen check-wheel-contents dist/*.whl
+uv run --frozen pytest -q tests/test_installed_package.py -m installed
 ```
 
 The final test installs both freshly built archives into separate clean virtual

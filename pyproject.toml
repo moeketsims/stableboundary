@@ -36,6 +36,7 @@ include = [
   "/examples/known_nuisance_fit.py",
   "/pyproject.toml",
   "/src/stableboundary",
+  "/uv.lock",
 ]
 exclude = [
   "/.planning",
@@ -83,3 +84,7 @@ files = ["src/stableboundary"]
 [tool.coverage.run]
 branch = true
 source = ["stableboundary"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
