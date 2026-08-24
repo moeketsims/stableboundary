@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import inspect
+from math import exp, expm1, lgamma, log, log1p
+from warnings import warn
 
 import numpy as np
 import pytest
-from scipy.integrate import quad  # type: ignore[import-untyped]
+from scipy.integrate import IntegrationWarning, quad  # type: ignore[import-untyped]
 from scipy.optimize import brentq  # type: ignore[import-untyped]
 from scipy.special import (  # type: ignore[import-untyped]
     betainc,
@@ -19,6 +21,7 @@ import stableboundary.approximation as approximation_module
 from stableboundary import (
     LocalDesign,
     LocalPrior,
+    NumericalProbabilityError,
     ValidationError,
     fit_limiting_approximation,
 )
@@ -41,6 +44,106 @@ def _counts(design: LocalDesign, *, negative: int, positive: int) -> CellCounts:
     )
 
 
+def _log_difference(log_upper: float, log_lower: float) -> float:
+    """Return log(exp(log_upper) - exp(log_lower)) without underflow."""
+    assert log_lower < log_upper
+    return log_upper + log(-expm1(log_lower - log_upper))
+
+
+def _log_regularized_integer_gamma_lower(shape: int, value: float) -> float:
+    """Independent log-domain lower Gamma CDF for integer shape and small x."""
+    term = 1.0
+    series = 1.0
+    for index in range(1, 10_000):
+        term *= value / (shape + index)
+        series += term
+        if term <= np.finfo(np.float64).eps * series:
+            break
+    else:  # pragma: no cover - the adversarial cases converge in a few terms
+        raise AssertionError("reference Gamma series did not converge")
+    return -value + shape * log(value) - lgamma(shape + 1.0) + log(series)
+
+
+def _log_gamma_interval_mass(
+    shape: int,
+    rate: float,
+    lower: float,
+    upper: float,
+) -> float:
+    return _log_difference(
+        _log_regularized_integer_gamma_lower(shape, rate * upper),
+        _log_regularized_integer_gamma_lower(shape, rate * lower),
+    )
+
+
+def _truncated_gamma_mean(
+    shape: int,
+    rate: float,
+    lower: float,
+    upper: float,
+) -> float:
+    log_mass = _log_gamma_interval_mass(shape, rate, lower, upper)
+    log_shifted_mass = _log_gamma_interval_mass(shape + 1, rate, lower, upper)
+    return (shape / rate) * exp(log_shifted_mass - log_mass)
+
+
+def _truncated_gamma_cdf(
+    value: float,
+    shape: int,
+    rate: float,
+    lower: float,
+    upper: float,
+) -> float:
+    if value <= lower:
+        return 0.0
+    if value >= upper:
+        return 1.0
+    return exp(
+        _log_gamma_interval_mass(shape, rate, lower, value)
+        - _log_gamma_interval_mass(shape, rate, lower, upper)
+    )
+
+
+def _truncated_gamma_survival(
+    value: float,
+    shape: int,
+    rate: float,
+    lower: float,
+    upper: float,
+) -> float:
+    if value <= lower:
+        return 1.0
+    if value >= upper:
+        return 0.0
+    return exp(
+        _log_gamma_interval_mass(shape, rate, value, upper)
+        - _log_gamma_interval_mass(shape, rate, lower, upper)
+    )
+
+
+def _truncated_power_mean(shape: int, lower: float, upper: float) -> float:
+    log_mass = shape * log(upper) + log1p(-exp(shape * (log(lower) - log(upper))))
+    log_first_moment = (shape + 1) * log(upper) + log1p(
+        -exp((shape + 1) * (log(lower) - log(upper)))
+    )
+    return (shape / (shape + 1.0)) * exp(log_first_moment - log_mass)
+
+
+def _truncated_power_quantile(
+    probability: float,
+    shape: int,
+    lower: float,
+    upper: float,
+) -> float:
+    log_power = float(
+        np.logaddexp(
+            log1p(-probability) + shape * log(lower),
+            log(probability) + shape * log(upper),
+        )
+    )
+    return exp(log_power / shape)
+
+
 def test_limiting_intensities_and_conjugate_shapes_match_manuscript() -> None:
     design = LocalDesign.from_sample_size(64, c=1.5)
     result = fit_limiting_approximation(_counts(design, negative=2, positive=3), design)
@@ -52,6 +155,17 @@ def test_limiting_intensities_and_conjugate_shapes_match_manuscript() -> None:
     assert result.beta_shapes == (4.0, 3.0)
     assert result.approximation is True
     assert result.method == "signed_poisson_gamma_beta_limit"
+
+
+def test_limiting_approximation_rejects_counts_bound_to_another_full_design() -> None:
+    count_design = LocalDesign.from_sample_size(64, c=1.0)
+    requested_design = LocalDesign.from_sample_size(64, c=1.25)
+    assert count_design.threshold != requested_design.threshold
+    with pytest.raises(ValidationError, match="full supplied design"):
+        fit_limiting_approximation(
+            _counts(count_design, negative=1, positive=2),
+            requested_design,
+        )
 
 
 def test_limiting_posterior_is_compactly_truncated_not_unbounded() -> None:
@@ -338,6 +452,227 @@ def test_limiting_quantiles_remain_stable_in_a_compact_beta_tail() -> None:
     ) == pytest.approx(expected, rel=2e-12, abs=2e-14)
 
 
+def test_subnormal_gamma_beta_cdfs_share_one_scaled_normalizer() -> None:
+    design = LocalDesign.from_sample_size(5_000)
+    prior = LocalPrior(
+        design=design,
+        h_min=0.25,
+        h_max=4.0,
+        p_min=0.01,
+        p_max=0.02,
+    )
+    result = fit_limiting_approximation(
+        _counts(design, negative=0, positive=design.n), design, prior
+    )
+    h_distribution = result._h_distribution()
+    p_distribution = result._p_distribution()
+    h_shape = int(result.h_shape)
+    p_shape = int(result.p_shape_positive)
+
+    expected_h_log_mass = _log_gamma_interval_mass(
+        h_shape, result.h_rate, prior.h_min, prior.h_max
+    )
+    expected_p_log_mass = p_shape * log(prior.p_max) + log1p(
+        -exp(p_shape * (log(prior.p_min) - log(prior.p_max)))
+    )
+    assert result.h_truncation_mass == 0.0
+    assert result.p_truncation_mass == 0.0
+    assert result.h_log_truncation_mass == pytest.approx(expected_h_log_mass, abs=1e-9)
+    assert result.p_log_truncation_mass == pytest.approx(expected_p_log_mass, abs=1e-9)
+
+    for probability in (0.05, 0.5, 0.95):
+        p_quantile = _truncated_power_quantile(
+            probability, p_shape, prior.p_min, prior.p_max
+        )
+        assert p_distribution.quantile(probability) == pytest.approx(
+            p_quantile, abs=1e-10
+        )
+        assert p_distribution.cdf(p_quantile) == pytest.approx(probability, abs=2e-11)
+        assert p_distribution.survival(p_quantile) == pytest.approx(
+            1.0 - probability, abs=2e-11
+        )
+        assert p_distribution.cdf(p_quantile) + p_distribution.survival(
+            p_quantile
+        ) == pytest.approx(1.0, abs=2e-11)
+
+        h_quantile = h_distribution.quantile(probability)
+        assert h_distribution.cdf(h_quantile) == pytest.approx(
+            _truncated_gamma_cdf(
+                h_quantile,
+                h_shape,
+                result.h_rate,
+                prior.h_min,
+                prior.h_max,
+            ),
+            abs=2e-11,
+        )
+        assert h_distribution.survival(h_quantile) == pytest.approx(
+            _truncated_gamma_survival(
+                h_quantile,
+                h_shape,
+                result.h_rate,
+                prior.h_min,
+                prior.h_max,
+            ),
+            abs=2e-11,
+        )
+        assert h_distribution.cdf(h_quantile) + h_distribution.survival(
+            h_quantile
+        ) == pytest.approx(1.0, abs=2e-11)
+
+
+def test_reflected_subnormal_beta_tail_preserves_cdf_survival_symmetry() -> None:
+    design = LocalDesign.from_sample_size(5_000)
+    positive_prior = LocalPrior(
+        design=design,
+        h_min=0.25,
+        h_max=4.0,
+        p_min=0.01,
+        p_max=0.02,
+    )
+    negative_prior = LocalPrior(
+        design=design,
+        h_min=0.25,
+        h_max=4.0,
+        p_min=0.98,
+        p_max=0.99,
+    )
+    positive = fit_limiting_approximation(
+        _counts(design, negative=0, positive=design.n), design, positive_prior
+    )
+    negative = fit_limiting_approximation(
+        _counts(design, negative=design.n, positive=0), design, negative_prior
+    )
+    positive_distribution = positive._p_distribution()
+    negative_distribution = negative._p_distribution()
+
+    assert positive.p_log_truncation_mass == pytest.approx(
+        negative.p_log_truncation_mass, abs=1e-9
+    )
+    assert positive._continuous_mean("p") + negative._continuous_mean(
+        "p"
+    ) == pytest.approx(1.0, abs=1e-10)
+    for probability in (0.05, 0.5, 0.95):
+        positive_quantile = positive_distribution.quantile(probability)
+        reflected_value = 1.0 - positive_quantile
+        assert negative_distribution.cdf(reflected_value) == pytest.approx(
+            positive_distribution.survival(positive_quantile), abs=2e-11
+        )
+        assert negative_distribution.quantile(probability) == pytest.approx(
+            1.0 - positive_distribution.quantile(1.0 - probability),
+            abs=1e-10,
+        )
+
+
+def test_concentrated_continuous_means_use_gamma_beta_independence() -> None:
+    design = LocalDesign.from_sample_size(5_000)
+    prior = LocalPrior(
+        design=design,
+        h_min=0.25,
+        h_max=4.0,
+        p_min=0.01,
+        p_max=0.02,
+    )
+    result = fit_limiting_approximation(
+        _counts(design, negative=0, positive=design.n), design, prior
+    )
+    h_mean = _truncated_gamma_mean(
+        int(result.h_shape), result.h_rate, prior.h_min, prior.h_max
+    )
+    p_mean = _truncated_power_mean(
+        int(result.p_shape_positive), prior.p_min, prior.p_max
+    )
+    expected = {
+        "h": h_mean,
+        "p": p_mean,
+        "alpha": 2.0 - design.r * h_mean,
+        "beta": 2.0 * p_mean - 1.0,
+        "tau_plus": design.r * h_mean * p_mean,
+        "tau_minus": design.r * h_mean * (1.0 - p_mean),
+    }
+    for quantity, value in expected.items():
+        assert result._continuous_mean(quantity) == pytest.approx(value, abs=1e-10)
+
+    grid_h_mean = float(np.sum(result.mass * result.h_nodes))
+    grid_p_mean = float(np.sum(result.mass * result.p_nodes))
+    assert abs(grid_h_mean - h_mean) > 1e-6
+    assert abs(grid_p_mean - p_mean) > 1e-10
+    assert result.parameter_summary("h").mean == pytest.approx(h_mean, abs=1e-10)
+    assert result.parameter_summary("p").mean == pytest.approx(p_mean, abs=1e-10)
+
+
+def test_concentrated_product_quantiles_match_uniformized_reference() -> None:
+    design = LocalDesign.from_sample_size(256)
+    prior = LocalPrior(
+        design=design,
+        h_min=0.25,
+        h_max=4.0,
+        p_min=0.01,
+        p_max=0.02,
+    )
+    result = fit_limiting_approximation(
+        _counts(design, negative=0, positive=design.n), design, prior
+    )
+    h_shape = int(result.h_shape)
+    p_shape = int(result.p_shape_positive)
+    lower_power_ratio = exp(p_shape * (log(prior.p_min) - log(prior.p_max)))
+
+    def p_from_uniform(probability: float) -> float:
+        if probability <= 0.0:
+            return prior.p_min
+        if probability >= 1.0:
+            return prior.p_max
+        return _truncated_power_quantile(probability, p_shape, prior.p_min, prior.p_max)
+
+    def reference_cdf(value: float) -> float:
+        breakpoints = []
+        for h_bound in (prior.h_min, prior.h_max):
+            p_break = value / (design.r * h_bound)
+            if prior.p_min < p_break < prior.p_max:
+                transformed = (
+                    exp(p_shape * (log(p_break) - log(prior.p_max))) - lower_power_ratio
+                ) / (1.0 - lower_power_ratio)
+                breakpoints.append(transformed)
+        return float(
+            quad(
+                lambda probability: _truncated_gamma_cdf(
+                    value / (design.r * p_from_uniform(probability)),
+                    h_shape,
+                    result.h_rate,
+                    prior.h_min,
+                    prior.h_max,
+                ),
+                0.0,
+                1.0,
+                epsabs=2e-12,
+                epsrel=2e-12,
+                limit=300,
+                points=sorted(set(breakpoints)) or None,
+            )[0]
+        )
+
+    lower = design.r * prior.h_min * prior.p_min
+    upper = design.r * prior.h_max * prior.p_max
+    h_distribution = result._h_distribution()
+    p_distribution = result._p_distribution()
+    for probability in (0.05, 0.5, 0.95):
+        expected = brentq(
+            lambda value, probability=probability: reference_cdf(value) - probability,
+            lower,
+            upper,
+            xtol=1e-14,
+            rtol=1e-14,
+        )
+        actual = approximation_module._product_quantile(
+            h_distribution,
+            p_distribution,
+            design.r,
+            probability,
+            positive=True,
+        )
+        assert actual == pytest.approx(expected, abs=1e-9)
+
+
 def test_limiting_continuous_summaries_are_normalized_and_inside_domains() -> None:
     design = LocalDesign.from_sample_size(64)
     result = fit_limiting_approximation(_counts(design, negative=2, positive=3), design)
@@ -368,6 +703,85 @@ def test_limiting_continuous_summaries_are_normalized_and_inside_domains() -> No
 
     with pytest.raises(ValidationError, match="unknown approximation quantity"):
         result.parameter_summary("not_a_parameter")
+
+
+def test_limiting_integrals_fail_on_warning_and_reported_nonconvergence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def warning_quad(*args: object, **kwargs: object) -> tuple[float, float]:
+        del args, kwargs
+        warn("forced failure", IntegrationWarning, stacklevel=2)
+        return 1.0, 0.0
+
+    monkeypatch.setattr(approximation_module, "quad", warning_quad)
+    with pytest.raises(NumericalProbabilityError, match="did not converge"):
+        approximation_module._integral(lambda value: value, 0.0, 1.0)
+
+    monkeypatch.setattr(
+        approximation_module,
+        "quad",
+        lambda *args, **kwargs: (1.0, 1e-3),
+    )
+    with pytest.raises(NumericalProbabilityError, match="did not converge"):
+        approximation_module._integral(lambda value: value, 0.0, 1.0)
+
+
+def test_product_quantile_requires_independent_final_cdf_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    design = LocalDesign.from_sample_size(64)
+    result = fit_limiting_approximation(_counts(design, negative=1, positive=2), design)
+    monkeypatch.setattr(
+        approximation_module,
+        "_product_cdf_condition_on_p",
+        lambda *args, **kwargs: 0.0,
+    )
+    with pytest.raises(NumericalProbabilityError, match="independent CDF check"):
+        approximation_module._product_quantile(
+            result._h_distribution(),
+            result._p_distribution(),
+            design.r,
+            0.5,
+            positive=True,
+        )
+
+
+def test_limiting_fit_is_controlled_and_grid_bytes_are_immutable() -> None:
+    with pytest.raises(TypeError, match="fit_limiting_approximation"):
+        approximation_module.LimitingApproximationFit()
+
+    design = LocalDesign.from_sample_size(64)
+    result = fit_limiting_approximation(_counts(design, negative=1, positive=2), design)
+    for retained in (result.h_nodes, result.p_nodes, result.mass):
+        assert not retained.flags.writeable
+        assert not retained.flags.owndata
+        with pytest.raises(ValueError):
+            retained.setflags(write=True)
+        with pytest.raises(ValueError):
+            retained[0, 0] = 0.0
+
+    summary = result.summary()
+    assert result.grid_purpose == "visualization_only"
+    assert summary["retained_grid"] == {
+        "nodes_per_axis": approximation_module._NODES,
+        "purpose": "visualization_only",
+        "used_for_summaries": False,
+    }
+
+    conflicting_design = LocalDesign.from_sample_size(design.n, c=1.25)
+    with pytest.raises(ValidationError, match="full supplied design"):
+        approximation_module.LimitingApproximationFit._from_components(
+            counts=result.counts,
+            design=conflicting_design,
+            prior=LocalPrior.default(conflicting_design),
+            h_nodes=result.h_nodes,
+            p_nodes=result.p_nodes,
+            mass=result.mass,
+            h_truncation_mass=result.h_truncation_mass,
+            p_truncation_mass=result.p_truncation_mass,
+            h_log_truncation_mass=result.h_log_truncation_mass,
+            p_log_truncation_mass=result.p_log_truncation_mass,
+        )
 
 
 def test_exact_fitter_has_no_limiting_approximation_dependency() -> None:
