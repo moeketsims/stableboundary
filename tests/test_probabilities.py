@@ -59,7 +59,10 @@ def _snapshot_scipy_state() -> dict[str, Any]:
 
 @contextmanager
 def _hostile_scipy_state() -> Iterator[dict[str, Any]]:
-    original = _snapshot_scipy_state()
+    original = {
+        name: (name in levy_stable.__dict__, getattr(levy_stable, name))
+        for name in GUARDED_SETTINGS
+    }
     try:
         for name, value in HOSTILE_SETTINGS.items():
             setattr(levy_stable, name, value)
@@ -67,8 +70,11 @@ def _hostile_scipy_state() -> Iterator[dict[str, Any]]:
         assert incoming == HOSTILE_SETTINGS
         yield incoming
     finally:
-        for name, value in original.items():
-            setattr(levy_stable, name, value)
+        for name, (was_instance_attribute, value) in original.items():
+            if was_instance_attribute:
+                setattr(levy_stable, name, value)
+            elif name in levy_stable.__dict__:
+                delattr(levy_stable, name)
 
 
 def test_backend_is_runtime_checkable_and_metadata_is_immutable() -> None:
@@ -89,6 +95,20 @@ def test_backend_restores_complete_scipy_state_after_success() -> None:
         value = backend.logpdf(0.25, 1.8, -0.3)
         assert np.isfinite(value)
         assert _snapshot_scipy_state() == incoming
+
+
+def test_backend_restores_inherited_setting_ownership() -> None:
+    backend = ScipyS0Backend()
+    incoming = {
+        name: (name in levy_stable.__dict__, getattr(levy_stable, name))
+        for name in GUARDED_SETTINGS
+    }
+    backend.logpdf(0.25, 1.8, -0.3)
+    outgoing = {
+        name: (name in levy_stable.__dict__, getattr(levy_stable, name))
+        for name in GUARDED_SETTINGS
+    }
+    assert outgoing == incoming
 
 
 def test_backend_restores_complete_scipy_state_after_failure(

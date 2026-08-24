@@ -45,7 +45,10 @@ _GUARDED_SETTINGS: Final = (
 def _canonical_s0_state() -> Iterator[None]:
     """Temporarily force canonical SciPy settings and restore every field."""
     with _SCIPY_LOCK:
-        snapshot = {name: getattr(levy_stable, name) for name in _GUARDED_SETTINGS}
+        snapshot = {
+            name: (name in levy_stable.__dict__, getattr(levy_stable, name))
+            for name in _GUARDED_SETTINGS
+        }
         try:
             levy_stable.parameterization = "S0"
             levy_stable.pdf_default_method = "piecewise"
@@ -53,8 +56,11 @@ def _canonical_s0_state() -> Iterator[None]:
             levy_stable.quad_eps = _QUAD_EPS
             yield
         finally:
-            for name, value in snapshot.items():
-                setattr(levy_stable, name, value)
+            for name, (was_instance_attribute, value) in snapshot.items():
+                if was_instance_attribute:
+                    setattr(levy_stable, name, value)
+                elif name in levy_stable.__dict__:
+                    delattr(levy_stable, name)
 
 
 def _numeric_array(name: str, value: ArrayLike) -> NDArray[np.float64]:
