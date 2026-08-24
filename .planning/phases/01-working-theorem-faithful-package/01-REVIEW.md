@@ -1,70 +1,81 @@
 ---
 phase: 01-working-theorem-faithful-package
-status: issues_found
+status: clean
 depth: deep
-files_reviewed: 6
+files_reviewed: 10
 files_reviewed_list:
   - .github/workflows/ci.yml
+  - README.md
+  - pyproject.toml
+  - uv.lock
   - scripts/artifact_oracle.json
   - scripts/generate_artifact_oracle.py
   - scripts/smoke_wheel.py
   - tests/test_installed_package.py
   - tests/test_smoke_wheel.py
+  - src/stableboundary/approximation.py
 findings:
-  critical: 3
-  warning: 3
+  critical: 0
+  warning: 0
   info: 0
-  total: 6
+  total: 0
 reviewed: 2026-08-24
-reviewed_head: 5d82a8a
+reviewed_head: 5ee43cbaf6ec180c9d48ff52368a3f162d353f60
+review_iterations: 3
+ci_run: 32779570642
 ---
 
-# Phase 01 Artifact and Installation Security Re-review
+# Phase 01 Artifact and Installation Final Review
 
 ## Verdict
 
-The earlier phase findings were repaired in focused pull requests. The final artifact/install branch is still blocked by three demonstrated execution-integrity defects and three scientific or coverage defects. This report supersedes the earlier review state while Git history preserves the prior findings.
+Clean at exact code head `5ee43cbaf6ec180c9d48ff52368a3f162d353f60`.
+Independent security, numerical-science, and package-maintenance reviewers found
+no remaining blocker or warning in the reviewed scope. The closeout documentation
+commit may merge only if the same 11 protected checks pass again.
 
-## Critical findings
+## Final evidence
 
-### CR-01: Installed package code executes before its bytes are validated
+- All 11 protected jobs passed on Linux, macOS, and Windows with Python
+  3.12--3.14, minimum runtime dependencies, and the locked environment in CI
+  run `32779570642`.
+- The ordinary suite passed with `493 passed, 1 skipped, 1 deselected`.
+- The focused artifact suite passed with `284 passed, 1 skipped`.
+- Strict mypy passed for all 15 configured package and verifier files; Ruff lint
+  and formatting passed.
+- Branch coverage was 83% for package source and 80% for the two verifier
+  scripts, with separate 80% enforcement gates.
+- Independent 48/64-node oracle regeneration and the three Fourier anchors
+  passed; the maximum order discrepancy remained
+  `5.5808775573946284e-06` and the maximum Fourier/SciPy discrepancy remained
+  `2.2815083156046967e-14`.
+- The locked Linux job installed the actual sdist through ordinary isolated pip,
+  ran `pip check`, and imported from outside the checkout. The authenticated
+  verifier separately inspected both the wheel and sdist-derived wheel.
 
-- **Files:** `scripts/smoke_wheel.py`, `tests/test_smoke_wheel.py`
-- **Evidence:** The installed probe imports `stableboundary` before it enumerates and hashes the installed package. The parent validates the returned hashes only after arbitrary package code has run. Substituted code can therefore execute first and forge the probe output.
-- **Required fix:** Split inert parent-side filesystem verification from runtime execution. Before any package import, validate the complete installed package tree, distribution metadata, and `RECORD` from raw paths. Launch a separate interpreter for runtime and scientific checks only after that verification succeeds. Add a hostile pre-import execution regression.
+## Adversarial review convergence
 
-### CR-02: Installer and verifier processes inherit hostile configuration
+The initial deep review found three critical and three warning findings. The
+first fix pass closed pre-import execution, hostile child configuration,
+snapshot TOCTOU, incomplete installed inventory, incorrect affine noise
+requirements, and missing hostile/independent-oracle gates.
 
-- **Files:** `scripts/smoke_wheel.py`, `tests/test_installed_package.py`, `tests/test_smoke_wheel.py`
-- **Evidence:** `_run` retains `PIP_CONFIG_FILE`, `PIP_INDEX_URL`, `PIP_TARGET`, and related ambient variables; pip calls omit `--isolated`. `python -I` still imports `site` and can execute `.pth` or `sitecustomize.py`. The outer smoke runner is launched without `-I -S`, so startup hooks or script-directory shadowing can run before the verifier sanitizes its environment.
-- **Required fix:** Launch the stdlib-only outer verifier with `-I -S`; use an allowlisted subprocess environment; use pip `--isolated --no-input` and disable bytecode compilation; complete dependency/build setup before the final package proof boundary; and add hostile environment/startup-hook tests. Keep compatibility installation distinct from the claim that package bytes were authenticated.
+The second security pass demonstrated and then closed Windows junction escapes,
+the final-proof/import mutation window, and permissive nested direct-URL
+provenance. Cross-platform CI additionally exposed bytecode creation during the
+post-proof import; every proof-boundary interpreter now disables bytecode writes
+while the exact post-runtime reproof remains active.
 
-### CR-03: Snapshot authentication has a demonstrated TOCTOU window
+The third maintenance pass added a real ordinary sdist install, placed both
+critical verifier scripts under strict typing and branch coverage, pinned the
+build backend, and derived the release version from the trusted repository
+metadata. The complete repair record is in `01-REVIEW-FIX.md`.
 
-- **Files:** `scripts/smoke_wheel.py`, `tests/test_smoke_wheel.py`
-- **Evidence:** The archive is authenticated, then dependency installation and a Python precheck run before pip consumes the artifact path. A hostile mutation during the first subprocess caused pip to receive replacement bytes. For an sdist, replacement bytes may execute during the build before the post-install mismatch is detected.
-- **Required fix:** Finish dependency and build-backend setup first. Create and inspect the private content-addressed snapshot at the final boundary, authenticate immediately before consumption, install with `--no-deps`, and reauthenticate afterward. Explicitly build an sdist wheel, inspect that exact wheel with the wheel contract, and install only the inspected result. Add the demonstrated between-check-and-use mutation regression.
+## Scientific limitation retained honestly
 
-## Warnings
-
-### WR-01: Installed distribution inventory is incomplete
-
-- **Files:** `scripts/smoke_wheel.py`, `tests/test_smoke_wheel.py`
-- **Evidence:** The probe inventories only `.py` and `py.typed` below the imported package directory. It does not prevent top-level `.pth` or `sitecustomize.py`, extra modules/native libraries/scripts, or altered dist-info metadata and `RECORD`.
-- **Required fix:** Validate the complete installed `distribution.files`/`RECORD`, package tree, dist-info metadata, and allowed pip-generated files before import. Reject extra executable or import-affecting files and add hostile regressions.
-
-### WR-02: Noise-scale oracle requirements encode floating-point noise as mandatory evidence
-
-- **Files:** `scripts/artifact_oracle.json`, `scripts/smoke_wheel.py`, `tests/test_smoke_wheel.py`
-- **Evidence:** The validator requires nine near-zero refinement terms to be strictly positive. A legitimate platform or improved implementation may round a true zero-scale discrepancy to exactly zero. After the affine diagnostic fix merged in PR #7, normalized alpha mean must equal h exactly and beta mean must equal p exactly; treating all four as unrelated empirical noise is mathematically wrong.
-- **Required fix:** Validate exact `alpha == h` and `beta == p` mean-refinement identities. Restrict the machine-noise band to the remaining seven terms and accept `0 <= value <= 5e-14`. Retain anti-faking protection through all 19 substantive reference-bound components, reflection, independent oracle generation, and hostile mutations.
-
-### WR-03: Tests omit the demonstrated security boundaries
-
-- **Files:** `.github/workflows/ci.yml`, `tests/test_installed_package.py`, `tests/test_smoke_wheel.py`
-- **Evidence:** Existing tests cover simple snapshot mutation and command order but not hostile pip configuration, outer startup hooks, mutation at pip consumption, pre-verification import execution, extra installed distribution files, or the sdist-built wheel. CI does not run the documented independent oracle regeneration check.
-- **Required fix:** Add each hostile regression, include the independent oracle `--check` in one ordinary protected job, and retain focused coverage of the verifier's critical branches.
-
-## Required re-review
-
-Re-run the exact hostile probes, complete ordinary suite, independent oracle regeneration, lint, formatting, strict typing, all 11 protected matrix jobs, and clean wheel/sdist installation. The branch may merge only after independent packaging-security, numerical-science, and maintainability reviewers all return clean.
+The independent oracle is strong reproducibility and regression evidence, not a
+mathematical certificate. Any finite black-box gate can be special-cased; source
+byte authentication, reflection, 19 substantive reference-bound components,
+broader tests, and source inspection jointly mitigate that risk. The package
+continues to report `research_uncertified` and the README makes no certification
+claim.
