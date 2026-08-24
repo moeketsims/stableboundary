@@ -11,6 +11,7 @@ import os
 import stat
 import subprocess
 import sys
+import sysconfig
 import tarfile
 import unicodedata
 import zipfile
@@ -737,6 +738,11 @@ def test_source_tree_posterior_regression_is_explicitly_approved() -> None:
         Path(sys.executable),
         cwd=smoke_wheel.REPOSITORY,
         artifact=Path("source-tree"),
+        import_roots=(
+            smoke_wheel.REPOSITORY / "src",
+            Path(sysconfig.get_path("purelib")),
+            Path(sysconfig.get_path("platlib")),
+        ),
     )
     assert set(science_probe) == {"primary", "reflection"}
     primary = science_probe["primary"]
@@ -854,7 +860,7 @@ def test_science_probe_failure_emits_complete_regression_fingerprint() -> None:
     message = str(captured.value)
     assert "actual=0.001" in message
     assert "expected=5.329070518200751e-15" in message
-    assert "allowed_interval=(0.0, 5e-14]" in message
+    assert "allowed_interval=[0.0, 5e-14]" in message
     assert '"component_count": 28' in message
     assert '"summary.alpha.interval_lower"' in message
     assert '"summary.tau_plus.median"' in message
@@ -1283,19 +1289,19 @@ def test_installed_payload_rejects_every_refinement_component_above_tolerance(
 
 NONZERO_REFINEMENT_PATHS = [
     ("joint_total_variation",),
-    ("log_normalizer_change",),
     *[
         ("summary_changes", quantity, component)
         for quantity in smoke_wheel.QUANTITIES
-        for component in ("mean", "median", "interval_lower", "interval_upper")
+        for component in ("median", "interval_lower", "interval_upper")
     ],
-    ("predictive_tail", "negative"),
-    ("predictive_tail", "positive"),
 ]
 
 NOISE_SCALE_REFINEMENT_PATHS = [
     ("log_normalizer_change",),
-    *[("summary_changes", quantity, "mean") for quantity in smoke_wheel.QUANTITIES],
+    *[
+        ("summary_changes", quantity, "mean")
+        for quantity in ("h", "p", "tau_plus", "tau_minus")
+    ],
     ("predictive_tail", "negative"),
     ("predictive_tail", "positive"),
 ]
@@ -1323,6 +1329,20 @@ def _replace_refinement_component(
     selected[path[-1]] = value
 
 
+def _replace_noise_component_with_affine_identity(
+    payload: dict[str, object], path: tuple[str, ...], value: float
+) -> None:
+    _replace_refinement_component(payload, path, value)
+    if path == ("summary_changes", "h", "mean"):
+        _replace_refinement_component(
+            payload, ("summary_changes", "alpha", "mean"), value
+        )
+    elif path == ("summary_changes", "p", "mean"):
+        _replace_refinement_component(
+            payload, ("summary_changes", "beta", "mean"), value
+        )
+
+
 @pytest.mark.parametrize("path", NONZERO_REFINEMENT_PATHS)
 def test_every_nonzero_refinement_component_is_reference_bound(
     path: tuple[str, ...],
@@ -1345,17 +1365,46 @@ def test_every_nonzero_refinement_component_is_reference_bound(
 @pytest.mark.parametrize(
     ("bad_value", "message"),
     [
-        (0.0, "lost nonzero refinement evidence"),
-        (5.000000000000001e-14, "5e-14 bound"),
+        (-5e-324, "above 0.002"),
+        (5.000000000000001e-14, "outside its 5e-14 bound"),
     ],
 )
-def test_noise_scale_refinement_band_rejects_zero_and_overshoot(
+def test_noise_scale_refinement_band_rejects_negative_and_overshoot(
     path: tuple[str, ...], bad_value: float, message: str
 ) -> None:
     payload = _valid_payload()
-    _replace_refinement_component(payload, path, bad_value)
+    _replace_noise_component_with_affine_identity(payload, path, bad_value)
 
     with pytest.raises(RuntimeError, match=message):
+        smoke_wheel._validate_example(payload)
+
+
+@pytest.mark.parametrize("path", NOISE_SCALE_REFINEMENT_PATHS)
+def test_noise_scale_refinement_band_accepts_exact_zero(path: tuple[str, ...]) -> None:
+    payload = _valid_payload()
+    _replace_noise_component_with_affine_identity(payload, path, 0.0)
+
+    smoke_wheel._validate_example(payload)
+
+
+@pytest.mark.parametrize(("affine", "base"), [("alpha", "h"), ("beta", "p")])
+def test_affine_mean_refinement_requires_exact_base_identity(
+    affine: str, base: str
+) -> None:
+    payload = _valid_payload()
+    refinement = payload["refinement"]
+    assert isinstance(refinement, dict)
+    changes = refinement["summary_changes"]
+    assert isinstance(changes, dict)
+    affine_changes = changes[affine]
+    base_changes = changes[base]
+    assert isinstance(affine_changes, dict)
+    assert isinstance(base_changes, dict)
+    assert affine_changes["mean"] == base_changes["mean"]
+    assert isinstance(affine_changes["mean"], float)
+    affine_changes["mean"] += 1e-16
+
+    with pytest.raises(RuntimeError, match="exact refinement identity"):
         smoke_wheel._validate_example(payload)
 
 
@@ -1537,14 +1586,6 @@ def test_oracle_records_measured_positive_refinement_envelopes() -> None:
         "predictive positive": {
             "minimum": 3.0241327034972768e-15,
             "maximum": 5.645047713194905e-15,
-        },
-        "alpha mean": {
-            "minimum": 1.5237943101242703e-14,
-            "maximum": 3.809485775310675e-14,
-        },
-        "beta mean": {
-            "minimum": 2.2204460492503135e-15,
-            "maximum": 4.163336342344338e-15,
         },
         "h mean": {
             "minimum": 1.6579330501069005e-15,

@@ -46,8 +46,6 @@ REFINEMENT_NOISE_COMPONENTS = frozenset(
         "log-normalizer change",
         "predictive negative",
         "predictive positive",
-        "alpha mean",
-        "beta mean",
         "h mean",
         "p mean",
         "tau_plus mean",
@@ -1385,13 +1383,16 @@ def _oracle_document() -> dict[str, Any]:
 
 
 def _installed_science_probe(
-    python: Path, *, cwd: Path, artifact: Path
+    python: Path, *, cwd: Path, artifact: Path, import_roots: tuple[Path, ...]
 ) -> dict[str, Any]:
     """Recompute the public experiment without importing its example module."""
     source = r"""
 import hashlib
 import json
 import platform
+import sys
+
+sys.path[:0] = __IMPORT_ROOTS__
 
 import numpy as np
 import stableboundary as sb
@@ -1524,9 +1525,13 @@ print(json.dumps({
     },
 }, sort_keys=True, allow_nan=False))
 """
+    source = source.replace(
+        "__IMPORT_ROOTS__",
+        json.dumps([str(root.resolve()) for root in import_roots]),
+    )
     decoded = json.loads(
         _run(
-            [str(python), "-I", "-c", source],
+            [str(python), "-I", "-S", "-c", source],
             cwd=cwd,
             stage=f"independent installed science probe for {artifact.name}",
             timeout_seconds=EXAMPLE_TIMEOUT_SECONDS,
@@ -2031,20 +2036,31 @@ def _validate_refinement(
             raise RuntimeError(
                 f"artifact oracle has invalid observed envelope for {name}"
             )
+    for affine, base in (("alpha mean", "h mean"), ("beta mean", "p mean")):
+        if (
+            components[affine] != components[base]
+            or expected_components[affine] != expected_components[base]
+        ):
+            raise RuntimeError(
+                "installed example violated exact refinement identity "
+                f"{affine} == {base}"
+            )
     for name, actual_value in components.items():
         expected_value = expected_components[name]
+        if name in {"alpha mean", "beta mean"}:
+            continue
+        if name in REFINEMENT_NOISE_COMPONENTS:
+            if not 0.0 <= actual_value <= noise_scale_upper:
+                raise RuntimeError(
+                    "installed example noise-scale refinement is outside its "
+                    f"5e-14 bound for {name}: actual={actual_value!r}, "
+                    f"expected={expected_value!r}, allowed_interval=[0.0, 5e-14]"
+                )
+            continue
         if expected_value <= 0.0 or actual_value <= 0.0:
             raise RuntimeError(
                 f"installed example lost nonzero refinement evidence for {name}"
             )
-        if name in REFINEMENT_NOISE_COMPONENTS:
-            if actual_value > noise_scale_upper:
-                raise RuntimeError(
-                    "installed example noise-scale refinement exceeds its "
-                    f"5e-14 bound for {name}: actual={actual_value!r}, "
-                    f"expected={expected_value!r}, allowed_interval=(0.0, 5e-14]"
-                )
-            continue
         _reference_close(
             f"refinement {name}",
             actual_value,
@@ -3305,6 +3321,7 @@ def _exercise_archive(
                 python,
                 cwd=work,
                 artifact=source_artifact,
+                import_roots=(installed.site_packages,),
             )
             science_values = _require_keys(
                 "independent installed science probe",
