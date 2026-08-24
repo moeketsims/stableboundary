@@ -1570,8 +1570,10 @@ def test_protected_ci_runs_independent_oracle_regeneration() -> None:
         encoding="utf-8"
     )
 
-    assert workflow.count("python scripts/generate_artifact_oracle.py") == 1
+    assert workflow.count("scripts/generate_artifact_oracle.py") == 1
     assert workflow.count("--check scripts/artifact_oracle.json") == 1
+    assert workflow.count("--source=stableboundary,scripts") == 2
+    assert "coverage report --include='scripts/*' --fail-under=80" in workflow
     assert "Independent oracle regeneration check" in workflow
 
 

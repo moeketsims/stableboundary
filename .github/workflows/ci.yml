@@ -36,7 +36,7 @@ jobs:
       - name: Ruff format
         run: python -m ruff format --check .
       - name: Strict type check
-        run: python -m mypy src
+        run: python -m mypy
       - name: Ordinary tests with branch coverage
         run: python -m coverage run --branch -m pytest -q -m "not installed"
       - name: Enforce branch coverage floor
@@ -99,15 +99,22 @@ jobs:
         run: |
           uv run --frozen ruff check .
           uv run --frozen ruff format --check .
-          uv run --frozen mypy src
+          uv run --frozen mypy
       - name: Locked tests with branch coverage
-        run: uv run --frozen coverage run --branch -m pytest -q -m "not installed"
+        run: >-
+          uv run --frozen coverage run --branch
+          --source=stableboundary,scripts
+          -m pytest -q -m "not installed"
       - name: Independent oracle regeneration check
         run: >-
-          uv run --frozen python scripts/generate_artifact_oracle.py
+          uv run --frozen coverage run --branch
+          --source=stableboundary,scripts --append
+          scripts/generate_artifact_oracle.py
           --check scripts/artifact_oracle.json
-      - name: Enforce branch coverage floor
-        run: uv run --frozen coverage report --fail-under=80
+      - name: Enforce package and verifier branch coverage floors
+        run: |
+          uv run --frozen coverage report --include='src/stableboundary/*' --fail-under=80
+          uv run --frozen coverage report --include='scripts/*' --fail-under=80
       - name: Locked build and metadata validation
         run: |
           uv run --frozen python -m build --no-isolation
@@ -123,9 +130,9 @@ jobs:
           outside_checkout="$(mktemp -d)"
           trap 'rm -rf "$install_root" "$outside_checkout"' EXIT
           python -m venv "$install_root/venv"
-          "$install_root/venv/bin/python" -m pip install --upgrade pip
-          "$install_root/venv/bin/python" -m pip install "$sdist"
-          "$install_root/venv/bin/python" -m pip check
+          "$install_root/venv/bin/python" -m pip --isolated install \
+            --disable-pip-version-check --no-input "$sdist"
+          "$install_root/venv/bin/python" -m pip --isolated check
           (
             cd "$outside_checkout"
             STABLEBOUNDARY_CHECKOUT="$GITHUB_WORKSPACE" \

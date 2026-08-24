@@ -20,11 +20,16 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from scipy.integrate import quad
-from scipy.interpolate import PchipInterpolator
-from scipy.optimize import brentq
-from scipy.special import gammaln, lambertw, roots_legendre, xlogy
-from scipy.stats import levy_stable
+from scipy.integrate import quad  # type: ignore[import-untyped]
+from scipy.interpolate import PchipInterpolator  # type: ignore[import-untyped]
+from scipy.optimize import brentq  # type: ignore[import-untyped]
+from scipy.special import (  # type: ignore[import-untyped]
+    gammaln,
+    lambertw,
+    roots_legendre,
+    xlogy,
+)
+from scipy.stats import levy_stable  # type: ignore[import-untyped]
 
 SAMPLE_SIZE = 5_000
 COUNTS = (1, 4_996, 3)
@@ -396,7 +401,7 @@ def _fourier_cdf(x_value: float, alpha: float, beta: float) -> float:
         limit=500,
         points=(0.01, 0.1, 1.0, 4.0, 8.0),
     )
-    return 0.5 - (near_zero + integral) / math.pi
+    return float(0.5 - (near_zero + integral) / math.pi)
 
 
 def _fourier_checks() -> dict[str, Any]:

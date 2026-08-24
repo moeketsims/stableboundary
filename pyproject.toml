@@ -81,7 +81,11 @@ select = ["B", "E", "F", "I", "UP"]
 python_version = "3.12"
 strict = true
 mypy_path = "src"
-files = ["src/stableboundary"]
+files = [
+  "src/stableboundary",
+  "scripts/smoke_wheel.py",
+  "scripts/generate_artifact_oracle.py",
+]
 
 [tool.coverage.run]
 branch = true

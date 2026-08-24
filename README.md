@@ -126,18 +126,23 @@ Run the checks in this order from the repository root:
 uv sync --extra dev --locked
 uv run --frozen ruff check .
 uv run --frozen ruff format --check .
-uv run --frozen mypy src
-uv run --frozen python scripts/generate_artifact_oracle.py --check scripts/artifact_oracle.json
-uv run --frozen coverage run --branch -m pytest -q -m "not installed"
-uv run --frozen coverage report --fail-under=80
+uv run --frozen mypy
+uv run --frozen coverage run --branch --source=stableboundary,scripts -m pytest -q -m "not installed"
+uv run --frozen coverage run --branch --source=stableboundary,scripts --append scripts/generate_artifact_oracle.py --check scripts/artifact_oracle.json
+uv run --frozen coverage report --include="src/stableboundary/*" --fail-under=80
+uv run --frozen coverage report --include="scripts/*" --fail-under=80
 uv run --frozen python -m build --no-isolation
 uv run --frozen twine check dist/*
 uv run --frozen check-wheel-contents dist/*.whl
 uv run --frozen pytest -q tests/test_installed_package.py -m installed
 ```
 
-The final test installs both freshly built archives into separate clean virtual
-environments and runs the same example from outside the checkout.
+The final test authenticates the wheel and source archive, explicitly builds
+and inspects the sdist-derived wheel, installs each inspected wheel into a
+separate clean virtual environment, and runs the same example from outside the
+checkout. Locked Linux CI additionally installs the source archive through
+ordinary isolated pip, including build isolation and dependency resolution, to
+exercise the user-facing sdist path.
 
 The oracle regeneration command independently evaluates the exact `S0`
 three-cell likelihood with 48- and 64-node tensor Gauss--Legendre rules and

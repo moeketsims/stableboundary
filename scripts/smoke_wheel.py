@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import csv
 import hashlib
 import io
@@ -601,7 +602,7 @@ def _validate_record(
         encoded = digest.removeprefix("sha256=")
         try:
             decoded = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
-        except (ValueError, base64.binascii.Error) as error:
+        except (ValueError, binascii.Error) as error:
             raise RuntimeError(
                 f"invalid RECORD digest in {artifact.name}: {name}"
             ) from error
@@ -679,28 +680,31 @@ def _inspect_archives(wheel: Path, sdist: Path) -> ArchiveInspection:
                 f"missing={sorted(expected_wheel_names - set(wheel_names))!r}, "
                 f"unexpected={sorted(set(wheel_names) - expected_wheel_names)!r}"
             )
-        for member in wheel_infos:
-            unix_type = (member.external_attr >> 16) & 0o170000
-            if member.flag_bits & 0x1:
+        for wheel_member in wheel_infos:
+            unix_type = (wheel_member.external_attr >> 16) & 0o170000
+            if wheel_member.flag_bits & 0x1:
                 raise RuntimeError(
-                    f"encrypted wheel member in {wheel.name}: {member.filename}"
+                    f"encrypted wheel member in {wheel.name}: {wheel_member.filename}"
                 )
             if unix_type == stat.S_IFLNK:
                 raise RuntimeError(
-                    f"symbolic links are forbidden in {wheel.name}: {member.filename}"
+                    "symbolic links are forbidden in "
+                    f"{wheel.name}: {wheel_member.filename}"
                 )
             if unix_type not in {0, stat.S_IFREG}:
                 raise RuntimeError(
-                    f"non-regular wheel member in {wheel.name}: {member.filename}"
+                    f"non-regular wheel member in {wheel.name}: {wheel_member.filename}"
                 )
-        info_by_name = {member.filename: member for member in wheel_infos}
+        info_by_name = {
+            wheel_member.filename: wheel_member for wheel_member in wheel_infos
+        }
         wheel_members: dict[str, bytes] = {}
-        for name, member in info_by_name.items():
+        for name, wheel_member in info_by_name.items():
             if name in wheel_package_names:
                 expected = wheel_package_names[name]
                 content = _bounded_zip_read(
                     archive,
-                    member,
+                    wheel_member,
                     maximum=MAX_METADATA_BYTES,
                     expected_size=len(expected),
                 )
@@ -711,7 +715,7 @@ def _inspect_archives(wheel: Path, sdist: Path) -> ArchiveInspection:
             elif name == license_path:
                 content = _bounded_zip_read(
                     archive,
-                    member,
+                    wheel_member,
                     maximum=MAX_METADATA_BYTES,
                     expected_size=len(license_bytes),
                 )
@@ -725,7 +729,7 @@ def _inspect_archives(wheel: Path, sdist: Path) -> ArchiveInspection:
                     if name == record_path
                     else MAX_METADATA_BYTES
                 )
-                content = _bounded_zip_read(archive, member, maximum=maximum)
+                content = _bounded_zip_read(archive, wheel_member, maximum=maximum)
             wheel_members[name] = content
         _validate_metadata(
             wheel, wheel_members[metadata_path], subject="wheel METADATA"
@@ -743,23 +747,23 @@ def _inspect_archives(wheel: Path, sdist: Path) -> ArchiveInspection:
         sdist_names = _assert_members_safe(
             sdist, (member.name for member in members), wheel=False
         )
-        for member in members:
-            if member.issym() or member.islnk():
+        for tar_member in members:
+            if tar_member.issym() or tar_member.islnk():
                 _validated_archive_path(
                     sdist,
-                    member.linkname,
-                    subject=f"link target for {member.name}",
+                    tar_member.linkname,
+                    subject=f"link target for {tar_member.name}",
                 )
                 raise RuntimeError(
-                    f"links are forbidden in {sdist.name}: {member.name}"
+                    f"links are forbidden in {sdist.name}: {tar_member.name}"
                 )
-            if member.ischr() or member.isblk() or member.isfifo():
+            if tar_member.ischr() or tar_member.isblk() or tar_member.isfifo():
                 raise RuntimeError(
-                    f"special archive member in {sdist.name}: {member.name}"
+                    f"special archive member in {sdist.name}: {tar_member.name}"
                 )
-            if not (member.isfile() or member.isdir()):
+            if not (tar_member.isfile() or tar_member.isdir()):
                 raise RuntimeError(
-                    f"unsupported archive member in {sdist.name}: {member.name}"
+                    f"unsupported archive member in {sdist.name}: {tar_member.name}"
                 )
         expected_prefix = f"{EXPECTED_SDIST_ROOT}/"
         if any(not name.startswith(expected_prefix) for name in sdist_names):
@@ -787,17 +791,17 @@ def _inspect_archives(wheel: Path, sdist: Path) -> ArchiveInspection:
                 f"missing={sorted(expected_sdist_names - set(sdist_names))!r}, "
                 f"unexpected={sorted(set(sdist_names) - expected_sdist_names)!r}"
             )
-        member_by_name = {member.name: member for member in members}
+        member_by_name = {tar_member.name: tar_member for tar_member in members}
         sdist_members: dict[str, bytes] = {}
-        for name, member in member_by_name.items():
-            expected = sdist_package_names.get(name, sdist_bound_names.get(name))
+        for name, tar_member in member_by_name.items():
+            sdist_expected = sdist_package_names.get(name, sdist_bound_names.get(name))
             content = _bounded_tar_read(
                 archive,
-                member,
+                tar_member,
                 maximum=MAX_METADATA_BYTES,
-                expected_size=None if expected is None else len(expected),
+                expected_size=(None if sdist_expected is None else len(sdist_expected)),
             )
-            if expected is not None and content != expected:
+            if sdist_expected is not None and content != sdist_expected:
                 raise RuntimeError(
                     f"sdist member differs from repository source: {name}"
                 )
