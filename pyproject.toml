@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.32,<2"]
+requires = ["hatchling==1.32.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -22,7 +22,7 @@ dev = [
   "build>=1.5,<2",
   "check-wheel-contents>=0.6.3,<1",
   "coverage>=7.15,<8",
-  "hatchling>=1.32,<2",
+  "hatchling==1.32.0",
   "hypothesis>=6.161",
   "mypy>=2.3,<3",
   "pytest>=9.1,<10",
@@ -32,8 +32,10 @@ dev = [
 
 [tool.hatch.build.targets.sdist]
 include = [
+  "/.gitignore",
   "/LICENSE",
   "/README.md",
+  "/examples/known_nuisance_fit.py",
   "/pyproject.toml",
   "/src/stableboundary",
   "/uv.lock",
@@ -79,7 +81,11 @@ select = ["B", "E", "F", "I", "UP"]
 python_version = "3.12"
 strict = true
 mypy_path = "src"
-files = ["src/stableboundary"]
+files = [
+  "src/stableboundary",
+  "scripts/smoke_wheel.py",
+  "scripts/generate_artifact_oracle.py",
+]
 
 [tool.coverage.run]
 branch = true

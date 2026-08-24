@@ -1,117 +1,81 @@
 ---
 phase: 01-working-theorem-faithful-package
-status: issues_found
-depth: standard
-files_reviewed: 30
+status: clean
+depth: deep
+files_reviewed: 10
 files_reviewed_list:
   - .github/workflows/ci.yml
   - README.md
   - pyproject.toml
-  - examples/known_nuisance_fit.py
+  - uv.lock
+  - scripts/artifact_oracle.json
+  - scripts/generate_artifact_oracle.py
   - scripts/smoke_wheel.py
-  - src/stableboundary/__init__.py
-  - src/stableboundary/_exceptions.py
-  - src/stableboundary/api.py
-  - src/stableboundary/approximation.py
-  - src/stableboundary/backends/__init__.py
-  - src/stableboundary/backends/_protocol.py
-  - src/stableboundary/backends/_scipy_s0.py
-  - src/stableboundary/cells.py
-  - src/stableboundary/design.py
-  - src/stableboundary/parameters.py
-  - src/stableboundary/posterior.py
-  - src/stableboundary/result.py
-  - src/stableboundary/simulation.py
-  - tests/conftest.py
-  - tests/test_approximation.py
-  - tests/test_design.py
-  - tests/test_fit_known.py
-  - tests/test_identification.py
   - tests/test_installed_package.py
-  - tests/test_parameters.py
-  - tests/test_prediction.py
-  - tests/test_probabilities.py
-  - tests/test_public_api.py
-  - tests/test_simulation.py
-  - src/stableboundary/py.typed
+  - tests/test_smoke_wheel.py
+  - src/stableboundary/approximation.py
 findings:
-  critical: 5
-  warning: 5
+  critical: 0
+  warning: 0
   info: 0
-  total: 10
+  total: 0
 reviewed: 2026-08-24
+reviewed_head: 5ee43cbaf6ec180c9d48ff52368a3f162d353f60
+review_iterations: 3
+ci_run: 32779570642
 ---
 
-# Phase 01 Code Review
+# Phase 01 Artifact and Installation Final Review
 
 ## Verdict
 
-The package is not ready for the Phase 01 verification gate. The implementation is coherent and its existing tests pass, but the adversarial numerical and package reviews identified five correctness or safety blockers and five reliability defects. All ten findings are in scope for repair before the next push.
+Clean at exact code head `5ee43cbaf6ec180c9d48ff52368a3f162d353f60`.
+Independent security, numerical-science, and package-maintenance reviewers found
+no remaining blocker or warning in the reviewed scope. The closeout documentation
+commit may merge only if the same 11 protected checks pass again.
 
-## Critical findings
+## Final evidence
 
-### CR-01: Posterior quantiles treat quadrature masses as pointwise CDF values
+- All 11 protected jobs passed on Linux, macOS, and Windows with Python
+  3.12--3.14, minimum runtime dependencies, and the locked environment in CI
+  run `32779570642`.
+- The ordinary suite passed with `493 passed, 1 skipped, 1 deselected`.
+- The focused artifact suite passed with `284 passed, 1 skipped`.
+- Strict mypy passed for all 15 configured package and verifier files; Ruff lint
+  and formatting passed.
+- Branch coverage was 83% for package source and 80% for the two verifier
+  scripts, with separate 80% enforcement gates.
+- Independent 48/64-node oracle regeneration and the three Fourier anchors
+  passed; the maximum order discrepancy remained
+  `5.5808775573946284e-06` and the maximum Fourier/SciPy discrepancy remained
+  `2.2815083156046967e-14`.
+- The locked Linux job installed the actual sdist through ordinary isolated pip,
+  ran `pip check`, and imported from outside the checkout. The authenticated
+  verifier separately inspected both the wheel and sdist-derived wheel.
 
-- **Files:** `src/stableboundary/posterior.py`, `src/stableboundary/result.py`
-- **Evidence:** Marginal quantiles are obtained by applying `numpy.interp` directly to cumulative Gauss-node weights. Gaussian quadrature weights represent integrated cell mass, not CDF values located at the nodes. Even a uniform posterior therefore exhibits a half-cell displacement. The refinement test compares the same biased construction at two resolutions and can certify the wrong summaries.
-- **Required fix:** Construct marginal continuous CDFs on supports that include their endpoints, integrate normalized marginal densities, invert those CDFs for all reported quantiles, and make convergence checks assess the exact summaries returned to users. Add a no-data/uniform-posterior regression test with analytically known median and interval endpoints.
+## Adversarial review convergence
 
-### CR-02: Structurally compatible non-S0 backends are silently accepted
+The initial deep review found three critical and three warning findings. The
+first fix pass closed pre-import execution, hostile child configuration,
+snapshot TOCTOU, incomplete installed inventory, incorrect affine noise
+requirements, and missing hostile/independent-oracle gates.
 
-- **Files:** `src/stableboundary/cells.py`, `src/stableboundary/posterior.py`, `src/stableboundary/result.py`
-- **Evidence:** Backend calls are accepted through the protocol without checking `metadata.parameterization`. Result audit metadata then reports `S0` unconditionally. An S1 backend can consequently be used while the public result claims S0 semantics.
-- **Required fix:** Validate S0 parameterization at every public inference/probability boundary, preserve the actual validated backend metadata in results, and add rejection tests for an otherwise conforming S1 test double.
+The second security pass demonstrated and then closed Windows junction escapes,
+the final-proof/import mutation window, and permissive nested direct-URL
+provenance. Cross-platform CI additionally exposed bytecode creation during the
+post-proof import; every proof-boundary interpreter now disables bytecode writes
+while the exact post-runtime reproof remains active.
 
-### CR-03: Ambient SciPy settings can alter supposedly canonical inference
+The third maintenance pass added a real ordinary sdist install, placed both
+critical verifier scripts under strict typing and branch coverage, pinned the
+build backend, and derived the release version from the trusted repository
+metadata. The complete repair record is in `01-REVIEW-FIX.md`.
 
-- **File:** `src/stableboundary/backends/_scipy_s0.py`
-- **Evidence:** The configuration context snapshots and restores some SciPy settings but does not force and record every result-affecting piecewise tolerance/method setting. Prior mutations of the public SciPy singleton can change computed probabilities while package metadata continues to report package defaults.
-- **Required fix:** Use a fully configured package-owned stable-distribution generator, explicitly set all result-affecting options, record their effective values, and test that hostile ambient SciPy settings do not change package output.
+## Scientific limitation retained honestly
 
-### CR-04: A package-private lock does not isolate SciPy process-global mutation
-
-- **File:** `src/stableboundary/backends/_scipy_s0.py`
-- **Evidence:** The lock coordinates only calls made through `stableboundary`. Direct concurrent use of `scipy.stats.levy_stable` can observe temporary package mutations or race with them.
-- **Required fix:** Stop mutating SciPy's public singleton. Configure and guard a package-owned generator instance (or an equivalently isolated implementation), and test that the public SciPy singleton remains unchanged during package calls.
-
-### CR-05: Artifact inspection can normalize unsafe archive members into safe-looking paths
-
-- **File:** `scripts/smoke_wheel.py`
-- **Evidence:** Member paths are normalized with `lstrip("./")`, which erases absolute or traversal prefixes before validation. Tar symbolic- and hard-link targets are not validated. A malicious path such as `../../payload.py` can therefore become `payload.py` and the artifact may subsequently be passed to `pip`.
-- **Required fix:** Reject absolute paths, parent traversal, drive-qualified paths, and unsafe tar link targets before installation. Add hostile wheel/sdist member tests.
-
-## Warnings
-
-### WR-01: Prediction silently replaces the fitted backend
-
-- **File:** `src/stableboundary/result.py`
-- **Evidence:** Predictive methods instantiate `ScipyS0Backend` even when inference used an injected, validated backend. Prediction can therefore use different numerical semantics from fitting.
-- **Required fix:** Retain and reuse the fitted backend, or require an explicitly supplied backend whose metadata is checked for compatibility. Add a backend-continuity test.
-
-### WR-02: ZIP sdists are accepted by discovery but opened as tar archives
-
-- **File:** `scripts/smoke_wheel.py`
-- **Evidence:** Artifact discovery accepts `.zip`, while archive inspection always calls the tar reader.
-- **Required fix:** Restrict the smoke contract to the built `.tar.gz` sdist or implement a separate ZIP inspection path. Test the selected contract.
-
-### WR-03: Installed smoke does not certify the inference method
-
-- **File:** `scripts/smoke_wheel.py`
-- **Evidence:** The subprocess oracle checks status and numerical summaries but does not require `method == "exact_finite_three_cell"`.
-- **Required fix:** Assert the exact method identifier in installed wheel and sdist runs.
-
-### WR-04: Malformed scientific output can pass installed-smoke validation
-
-- **File:** `scripts/smoke_wheel.py`
-- **Evidence:** Counts are coerced through `int`, allowing fractional or string values; non-negativity, count totals, interval ordering, and parameter-domain constraints are not comprehensively checked.
-- **Required fix:** Validate strict JSON types, count keys and total, finite values, interval ordering, and all alpha/beta/local-parameter domains without lossy coercion. Add malformed-payload tests.
-
-### WR-05: Build and installed-smoke subprocesses have no time bounds
-
-- **Files:** `scripts/smoke_wheel.py`, `tests/test_installed_package.py`
-- **Evidence:** Dependency installation and proof-of-work subprocesses can hang indefinitely, including in CI.
-- **Required fix:** Add explicit, stage-appropriate subprocess timeouts, surface timeout context cleanly, and cover timeout handling in tests.
-
-## Required re-review
-
-Re-run numerical correctness, backend-provenance, archive-safety, lint, strict typing, ordinary tests, build metadata, wheel-content, and clean wheel/sdist installation checks after repairs. The review status may become `clean` only when no Critical or Warning findings remain.
+The independent oracle is strong reproducibility and regression evidence, not a
+mathematical certificate. Any finite black-box gate can be special-cased; source
+byte authentication, reflection, 19 substantive reference-bound components,
+broader tests, and source inspection jointly mitigate that risk. The package
+continues to report `research_uncertified` and the README makes no certification
+claim.
