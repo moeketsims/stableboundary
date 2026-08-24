@@ -33,7 +33,12 @@ class BackendMetadata:
             raise ValidationError("backend metadata must name its method")
         if isinstance(self.tolerance, bool) or not isinstance(self.tolerance, Real):
             raise ValidationError("backend tolerance must be a real number")
-        tolerance = float(self.tolerance)
+        try:
+            tolerance = float(self.tolerance)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValidationError(
+                "backend tolerance must be a finite real number"
+            ) from error
         if not isfinite(tolerance) or tolerance <= 0.0:
             raise ValidationError(
                 "backend tolerance must be finite and strictly positive"
@@ -61,8 +66,17 @@ class BackendMetadata:
                 value, (str, int, float, type(None))
             ):
                 raise ValidationError("backend effective setting values are invalid")
-            if isinstance(value, (int, float)) and not isfinite(float(value)):
-                raise ValidationError("backend effective setting values must be finite")
+            if isinstance(value, (int, float)):
+                try:
+                    finite_value = isfinite(float(value))
+                except (TypeError, ValueError, OverflowError) as error:
+                    raise ValidationError(
+                        "backend effective setting values must be finite"
+                    ) from error
+                if not finite_value:
+                    raise ValidationError(
+                        "backend effective setting values must be finite"
+                    )
             setting_names.add(name)
         object.__setattr__(self, "tolerance", tolerance)
 

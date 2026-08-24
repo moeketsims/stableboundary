@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from importlib.metadata import PackageNotFoundError, version
 from math import isfinite
 from numbers import Integral, Real
-from platform import python_version
 from typing import Final, Literal, Self
 
 import numpy as np
-import scipy  # type: ignore[import-untyped]
 from numpy.typing import NDArray
 from scipy.special import roots_legendre, xlogy  # type: ignore[import-untyped]
 
@@ -40,13 +37,6 @@ EvidenceStatus = Literal[
     "two_sided_evidence",
 ]
 PrecisionStatus = Literal["unidentified", "not_assessed"]
-
-
-def _package_version() -> str:
-    try:
-        return version("stableboundary")
-    except PackageNotFoundError:  # pragma: no cover - source-tree fallback
-        return "0.1.0"
 
 
 def _probability(name: str, value: float) -> float:
@@ -219,8 +209,12 @@ class PosteriorPredictiveSample:
         values = np.asarray(self.values, dtype=np.float64)
         if values.shape != (self.draw_count,) or not np.all(np.isfinite(values)):
             raise NumericalProbabilityError("posterior predictive draws are invalid")
-        retained = np.array(values, dtype=np.float64, copy=True)
-        retained.setflags(write=False)
+        payload = np.ascontiguousarray(values, dtype=np.float64).tobytes(order="C")
+        retained = np.frombuffer(payload, dtype=np.float64)
+        if retained.flags.writeable:  # pragma: no cover - bytes contract guard
+            raise NumericalProbabilityError(
+                "posterior predictive draws could not be made immutable"
+            )
         object.__setattr__(self, "values", retained)
 
 
@@ -461,16 +455,11 @@ class KnownNuisanceFit:
 
     def audit_record(self) -> dict[str, object]:
         refinement = self.posterior.refinement
-        package_version = _package_version()
+        environment = self.posterior.environment
         return {
             "schema_version": 1,
-            "package_version": package_version,
-            "environment": {
-                "python": python_version(),
-                "numpy": np.__version__,
-                "scipy": scipy.__version__,
-                "stableboundary": package_version,
-            },
+            "package_version": environment.stableboundary,
+            "environment": environment.to_dict(),
             "status": self.status,
             "method": self.method,
             "parameterization": self.posterior.backend_parameterization,

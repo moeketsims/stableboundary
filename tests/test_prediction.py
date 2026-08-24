@@ -154,6 +154,8 @@ def test_seeded_prediction_and_quantile_mc_metadata_are_reproducible(
     second = fit.posterior_predictive(80, seed=20260824)
     assert np.array_equal(first.values, second.values)
     assert not first.values.flags.writeable
+    with pytest.raises(ValueError, match="WRITEABLE flag"):
+        first.values.setflags(write=True)
     estimate = fit.predictive_quantile(0.9, draws=80, seed=17)
     repeated = fit.predictive_quantile(0.9, draws=80, seed=17)
     assert estimate == repeated

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 from math import isfinite
 from numbers import Integral, Real
-from typing import Final, Literal
+from platform import python_version
+from typing import Final, Literal, Self
 
 import numpy as np
+import scipy  # type: ignore[import-untyped]
 from numpy.typing import NDArray
 from scipy.interpolate import RegularGridInterpolator  # type: ignore[import-untyped]
 from scipy.optimize import brentq  # type: ignore[import-untyped]
@@ -41,6 +44,47 @@ _PUSHFORWARD_NODES, _PUSHFORWARD_WEIGHTS = roots_legendre(8)
 _CANONICAL_SCIPY_S0_TYPE: Final = ScipyS0Backend
 
 
+def _package_version() -> str:
+    try:
+        return version("stableboundary")
+    except PackageNotFoundError:  # pragma: no cover - source-tree fallback
+        return "0.1.0"
+
+
+@dataclass(frozen=True, slots=True)
+class _InferenceEnvironment:
+    """Runtime versions captured once as part of the inferential result."""
+
+    python: str
+    numpy: str
+    scipy: str
+    stableboundary: str
+
+    def __post_init__(self) -> None:
+        for name in ("python", "numpy", "scipy", "stableboundary"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValidationError(f"environment {name} version must be named")
+            object.__setattr__(self, name, value.strip())
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "python": self.python,
+            "numpy": self.numpy,
+            "scipy": self.scipy,
+            "stableboundary": self.stableboundary,
+        }
+
+
+def _capture_environment() -> _InferenceEnvironment:
+    return _InferenceEnvironment(
+        python=python_version(),
+        numpy=np.__version__,
+        scipy=scipy.__version__,
+        stableboundary=_package_version(),
+    )
+
+
 def _bounded_integer(name: str, value: int, *, minimum: int, maximum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, Integral):
         raise ValidationError(f"{name} must be an integer")
@@ -60,12 +104,35 @@ def _bounded_real(
 ) -> float:
     if isinstance(value, bool) or not isinstance(value, Real):
         raise ValidationError(f"{name} must be a real number")
-    result = float(value)
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValidationError(f"{name} must be a finite real number") from error
     upper_valid = result <= upper if upper_inclusive else result < upper
     if not isfinite(result) or not lower < result or not upper_valid:
         closing = "]" if upper_inclusive else ")"
         raise ValidationError(f"{name} must lie in ({lower}, {upper}{closing}")
     return result
+
+
+def _immutable_float64_array(
+    name: str,
+    value: object,
+    *,
+    shape: tuple[int, ...],
+) -> NDArray[np.float64]:
+    """Copy an array into immutable bytes-backed storage."""
+    try:
+        raw = np.asarray(value, dtype=np.float64)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ConvergenceError(f"{name} must be a numeric array") from error
+    if raw.shape != shape or not np.all(np.isfinite(raw)):
+        raise ConvergenceError(f"{name} must be a finite {shape!r} array")
+    payload = np.ascontiguousarray(raw, dtype=np.float64).tobytes(order="C")
+    retained = np.frombuffer(payload, dtype=np.float64).reshape(shape)
+    if retained.flags.writeable:  # pragma: no cover - bytes contract guard
+        raise ConvergenceError(f"{name} immutable storage could not be established")
+    return retained
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +184,16 @@ class SummaryRefinement:
     interval_lower: float
     interval_upper: float
 
+    def __post_init__(self) -> None:
+        if self.quantity not in _QUANTITIES:
+            raise ConvergenceError(f"unknown refinement quantity: {self.quantity!r}")
+        for name in ("mean", "median", "interval_lower", "interval_upper"):
+            value = getattr(self, name)
+            if not isfinite(value) or value < 0.0:
+                raise ConvergenceError(
+                    "summary refinement changes must be finite and nonnegative"
+                )
+
     @property
     def maximum(self) -> float:
         return max(self.mean, self.median, self.interval_lower, self.interval_upper)
@@ -149,6 +226,15 @@ class PredictiveTailRefinement:
     positive: float
     negative: float
 
+    def __post_init__(self) -> None:
+        if any(
+            not isfinite(value) or value < 0.0
+            for value in (self.positive, self.negative)
+        ):
+            raise ConvergenceError(
+                "predictive-tail refinement changes must be finite and nonnegative"
+            )
+
     @property
     def maximum(self) -> float:
         return max(self.positive, self.negative)
@@ -165,6 +251,44 @@ class RefinementDiagnostics:
     summaries: tuple[SummaryRefinement, ...]
     predictive_tail: PredictiveTailRefinement
     converged: bool
+
+    def __post_init__(self) -> None:
+        tolerance = _bounded_real(
+            "refinement tolerance",
+            self.tolerance,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=True,
+        )
+        common = _bounded_integer(
+            "common_grid_points",
+            self.common_grid_points,
+            minimum=3,
+            maximum=513,
+        )
+        if (
+            not isfinite(self.joint_total_variation)
+            or not 0.0 <= self.joint_total_variation <= 1.0
+            or not isfinite(self.log_normalizer_change)
+            or self.log_normalizer_change < 0.0
+        ):
+            raise ConvergenceError("joint refinement diagnostics are invalid")
+        if (
+            not isinstance(self.summaries, tuple)
+            or not all(isinstance(item, SummaryRefinement) for item in self.summaries)
+            or tuple(item.quantity for item in self.summaries) != _QUANTITIES
+        ):
+            raise ConvergenceError("refinement summaries are incomplete")
+        if not isinstance(self.predictive_tail, PredictiveTailRefinement):
+            raise ConvergenceError("predictive-tail refinement is invalid")
+        if not isinstance(self.converged, bool):
+            raise ConvergenceError("refinement convergence must be boolean")
+        object.__setattr__(self, "tolerance", tolerance)
+        object.__setattr__(self, "common_grid_points", common)
+        if self.converged and self.maximum_component > tolerance:
+            raise ConvergenceError(
+                "converged refinement exceeds its retained tolerance"
+            )
 
     @property
     def maximum_component(self) -> float:
@@ -203,7 +327,7 @@ def _validate_experiment_provenance(
         raise ValidationError("cell counts must form the supplied finite design")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class PosteriorGrid:
     """Read-only refined tensor grid and normalized posterior probability mass."""
 
@@ -222,27 +346,173 @@ class PosteriorGrid:
     counts: CellCounts
     backend_metadata: BackendMetadata
     backend_origin: Literal["canonical_scipy_s0", "custom"]
+    environment: _InferenceEnvironment
     refinement: RefinementDiagnostics
 
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        """Prevent public construction or ``dataclasses.replace`` forgery."""
+        del args, kwargs
+        raise TypeError("use compute_exact_posterior() to construct a posterior")
+
+    @classmethod
+    def _from_components(
+        cls,
+        *,
+        h_nodes: NDArray[np.float64],
+        p_nodes: NDArray[np.float64],
+        mass: NDArray[np.float64],
+        q_minus: NDArray[np.float64],
+        q_plus: NDArray[np.float64],
+        log_normalizer: float,
+        base_nodes: int,
+        refined_nodes: int,
+        interval_mass: float,
+        summaries: tuple[_PosteriorSummary, ...],
+        design: LocalDesign,
+        prior: LocalPrior,
+        counts: CellCounts,
+        backend_metadata: BackendMetadata,
+        backend_origin: Literal["canonical_scipy_s0", "custom"],
+        environment: _InferenceEnvironment,
+        refinement: RefinementDiagnostics,
+    ) -> Self:
+        """Build one posterior through the package-owned validated path."""
+        result = object.__new__(cls)
+        for name, value in (
+            ("h_nodes", h_nodes),
+            ("p_nodes", p_nodes),
+            ("mass", mass),
+            ("q_minus", q_minus),
+            ("q_plus", q_plus),
+            ("log_normalizer", log_normalizer),
+            ("base_nodes", base_nodes),
+            ("refined_nodes", refined_nodes),
+            ("interval_mass", interval_mass),
+            ("summaries", summaries),
+            ("design", design),
+            ("prior", prior),
+            ("counts", counts),
+            ("backend_metadata", backend_metadata),
+            ("backend_origin", backend_origin),
+            ("environment", environment),
+            ("refinement", refinement),
+        ):
+            object.__setattr__(result, name, value)
+        result.__post_init__()
+        return result
+
     def __post_init__(self) -> None:
-        shape = (self.refined_nodes, self.refined_nodes)
+        base_nodes = _bounded_integer(
+            "base_nodes", self.base_nodes, minimum=2, maximum=256
+        )
+        refined_nodes = _bounded_integer(
+            "refined_nodes", self.refined_nodes, minimum=2, maximum=384
+        )
+        if refined_nodes <= base_nodes:
+            raise ConvergenceError("posterior refined_nodes must exceed base_nodes")
+        interval_mass = _bounded_real(
+            "interval_mass",
+            self.interval_mass,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        shape = (refined_nodes, refined_nodes)
         arrays: list[NDArray[np.float64]] = []
         for name in ("h_nodes", "p_nodes", "mass", "q_minus", "q_plus"):
-            raw = np.asarray(getattr(self, name), dtype=np.float64)
-            if raw.shape != shape or not np.all(np.isfinite(raw)):
-                raise ConvergenceError(f"{name} must be a finite {shape!r} array")
-            value = np.array(raw, dtype=np.float64, copy=True)
-            value.setflags(write=False)
-            arrays.append(value)
+            arrays.append(
+                _immutable_float64_array(name, getattr(self, name), shape=shape)
+            )
         if np.any(arrays[2] < 0.0) or abs(float(np.sum(arrays[2])) - 1.0) > 1e-12:
             raise ConvergenceError("posterior mass must be nonnegative and normalize")
-        if not isfinite(self.log_normalizer):
+        if np.any((arrays[3] <= 0.0) | (arrays[3] >= 1.0)) or np.any(
+            (arrays[4] <= 0.0) | (arrays[4] >= 1.0)
+        ):
+            raise ConvergenceError("posterior signed-tail probabilities are invalid")
+        if np.any(arrays[3] + arrays[4] >= 1.0):
+            raise ConvergenceError(
+                "posterior signed-tail probabilities leave no center"
+            )
+        if isinstance(self.log_normalizer, bool) or not isinstance(
+            self.log_normalizer, Real
+        ):
+            raise ConvergenceError("posterior log normalizer must be a real number")
+        try:
+            log_normalizer = float(self.log_normalizer)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ConvergenceError("posterior log normalizer must be finite") from error
+        if not isfinite(log_normalizer):
             raise ConvergenceError("posterior log normalizer must be finite")
+        if not isinstance(self.summaries, tuple) or not all(
+            isinstance(summary, _PosteriorSummary) for summary in self.summaries
+        ):
+            raise ConvergenceError("posterior summaries must be retained records")
         if tuple(summary.quantity for summary in self.summaries) != _QUANTITIES:
             raise ConvergenceError(
                 "posterior summaries must cover each supported quantity once"
             )
         _validate_experiment_provenance(self.counts, self.design, self.prior)
+        expected_h_axis, _ = _legendre_axis(
+            self.prior.h_min, self.prior.h_max, refined_nodes
+        )
+        expected_p_axis, _ = _legendre_axis(
+            self.prior.p_min, self.prior.p_max, refined_nodes
+        )
+        expected_h, expected_p = np.meshgrid(
+            expected_h_axis,
+            expected_p_axis,
+            indexing="ij",
+        )
+        if not np.array_equal(arrays[0], expected_h) or not np.array_equal(
+            arrays[1], expected_p
+        ):
+            raise ConvergenceError(
+                "posterior nodes do not match the retained prior and quadrature"
+            )
+        grid_values = {
+            "h": arrays[0],
+            "p": arrays[1],
+            "alpha": 2.0 - self.design.r * arrays[0],
+            "beta": 2.0 * arrays[1] - 1.0,
+            "tau_plus": self.design.r * arrays[0] * arrays[1],
+            "tau_minus": self.design.r * arrays[0] * (1.0 - arrays[1]),
+        }
+        support = {
+            "h": (self.prior.h_min, self.prior.h_max),
+            "p": (self.prior.p_min, self.prior.p_max),
+            "alpha": (
+                2.0 - self.design.r * self.prior.h_max,
+                2.0 - self.design.r * self.prior.h_min,
+            ),
+            "beta": (2.0 * self.prior.p_min - 1.0, 2.0 * self.prior.p_max - 1.0),
+            "tau_plus": (
+                self.design.r * self.prior.h_min * self.prior.p_min,
+                self.design.r * self.prior.h_max * self.prior.p_max,
+            ),
+            "tau_minus": (
+                self.design.r * self.prior.h_min * (1.0 - self.prior.p_max),
+                self.design.r * self.prior.h_max * (1.0 - self.prior.p_min),
+            ),
+        }
+        for summary in self.summaries:
+            lower, upper = support[summary.quantity]
+            scale = max(1.0, upper - lower)
+            slack = 1e-12 * scale
+            if any(
+                value < lower - slack or value > upper + slack
+                for value in (
+                    summary.mean,
+                    summary.median,
+                    summary.interval_lower,
+                    summary.interval_upper,
+                )
+            ):
+                raise ConvergenceError("posterior summary lies outside prior support")
+            expected_mean = float(np.sum(arrays[2] * grid_values[summary.quantity]))
+            if abs(summary.mean - expected_mean) > slack:
+                raise ConvergenceError(
+                    "posterior summary mean does not match retained posterior mass"
+                )
         validate_s0_metadata(self.backend_metadata)
         if self.backend_origin not in {"canonical_scipy_s0", "custom"}:
             raise ValidationError("posterior backend origin is invalid")
@@ -253,6 +523,20 @@ class PosteriorGrid:
             raise ValidationError(
                 "canonical SciPy posterior metadata does not match the package backend"
             )
+        if not isinstance(self.environment, _InferenceEnvironment):
+            raise ValidationError("posterior must retain its inference environment")
+        if not isinstance(self.refinement, RefinementDiagnostics):
+            raise ConvergenceError("posterior must retain refinement diagnostics")
+        if (
+            self.refinement.common_grid_points < 3
+            or not self.refinement.converged
+            or self.refinement.maximum_component > self.refinement.tolerance
+        ):
+            raise ConvergenceError("posterior refinement provenance is invalid")
+        object.__setattr__(self, "base_nodes", base_nodes)
+        object.__setattr__(self, "refined_nodes", refined_nodes)
+        object.__setattr__(self, "interval_mass", interval_mass)
+        object.__setattr__(self, "log_normalizer", log_normalizer)
         for name, value in zip(
             ("h_nodes", "p_nodes", "mass", "q_minus", "q_plus"),
             arrays,
@@ -315,9 +599,11 @@ class PosteriorGrid:
             values = self.r * self.h_nodes * (1.0 - self.p_nodes)
         else:
             raise ValidationError(f"unknown posterior quantity: {quantity!r}")
-        result = np.array(values, dtype=np.float64, copy=True)
-        result.setflags(write=False)
-        return result
+        return _immutable_float64_array(
+            quantity,
+            values,
+            shape=(self.refined_nodes, self.refined_nodes),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -896,6 +1182,7 @@ def compute_exact_posterior(
         raise ConvergenceError(
             "refined_nodes must exceed base_nodes to demonstrate convergence"
         )
+    environment = _capture_environment()
     candidate: object = ScipyS0Backend() if backend is None else backend
     evaluator, metadata = validate_s0_backend(candidate)
     backend_origin: Literal["canonical_scipy_s0", "custom"] = (
@@ -908,13 +1195,16 @@ def compute_exact_posterior(
     diagnostics, summaries = _refinement_diagnostics(
         base, refined, design, prior, controls
     )
+    _, final_metadata = validate_s0_backend(evaluator)
+    if final_metadata != metadata:
+        raise ValidationError("backend metadata changed during posterior inference")
     if not diagnostics.converged:
         raise ConvergenceError(
             "posterior refinement failed: "
             f"maximum component {diagnostics.maximum_component:.6g} exceeds "
             f"tolerance {diagnostics.tolerance:.6g}"
         )
-    return PosteriorGrid(
+    return PosteriorGrid._from_components(
         h_nodes=refined.h_nodes,
         p_nodes=refined.p_nodes,
         mass=refined.mass,
@@ -930,6 +1220,7 @@ def compute_exact_posterior(
         counts=counts,
         backend_metadata=metadata,
         backend_origin=backend_origin,
+        environment=environment,
         refinement=diagnostics,
     )
 
