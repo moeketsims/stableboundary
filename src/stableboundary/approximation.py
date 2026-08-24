@@ -4,19 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from math import exp, isfinite, log
+from math import exp, isfinite, log, ulp
 from numbers import Real
-from typing import Final, Literal, Self
+from typing import Final, Literal
 from warnings import catch_warnings, simplefilter
 
 import numpy as np
-from numpy.typing import NDArray
 from scipy.integrate import IntegrationWarning, quad  # type: ignore[import-untyped]
 from scipy.optimize import brentq  # type: ignore[import-untyped]
 from scipy.special import (  # type: ignore[import-untyped]
     betaln,
     gammaln,
-    roots_legendre,
 )
 
 from ._exceptions import NumericalProbabilityError, ValidationError
@@ -24,11 +22,11 @@ from .cells import CellCounts
 from .design import LocalDesign, LocalPrior
 from .result import CredibleInterval, ParameterSummary
 
-_NODES: Final = 96
 _INTERVAL_MASS: Final = 0.90
 _QUADRATURE_RELATIVE_TOLERANCE: Final = 2e-12
 _QUADRATURE_LIMIT: Final = 200
 _CDF_ROUNDOFF_TOLERANCE: Final = 2e-11
+_TRUNCATION_LOG_MASS_PROJECTION_TOLERANCE: Final = 2e-11
 _PRODUCT_CDF_RESIDUAL_TOLERANCE: Final = 1e-9
 _DENSITY_DROP_LEVELS: Final = (1.0, 4.0, 16.0, 64.0, 256.0, 700.0)
 _QUANTITIES: Final = (
@@ -44,47 +42,13 @@ _QUANTITIES: Final = (
 def _support_value(name: str, value: float, lower: float, upper: float) -> float:
     if isinstance(value, bool) or not isinstance(value, Real):
         raise ValidationError(f"{name} must be a real number")
-    result = float(value)
+    try:
+        result = float(value)
+    except (OverflowError, TypeError, ValueError) as cause:
+        raise ValidationError(f"{name} must be a finite real number") from cause
     if not isfinite(result) or not lower <= result <= upper:
         raise ValidationError(f"{name} must lie in the compact prior support")
     return result
-
-
-def _axis(
-    lower: float, upper: float
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    nodes, weights = roots_legendre(_NODES)
-    half_width = 0.5 * (upper - lower)
-    midpoint = 0.5 * (upper + lower)
-    return midpoint + half_width * nodes, half_width * weights
-
-
-def _normalized_mass(
-    log_density: NDArray[np.float64],
-    weights: NDArray[np.float64],
-) -> NDArray[np.float64]:
-    log_weight = log_density + np.log(weights)
-    maximum = float(np.max(log_weight))
-    if not isfinite(maximum):
-        raise NumericalProbabilityError(
-            "truncated limiting posterior normalization is nonfinite"
-        )
-    scaled_weight = np.exp(log_weight - maximum)
-    scaled_normalizer = float(np.sum(scaled_weight))
-    if not isfinite(scaled_normalizer) or scaled_normalizer <= 0.0:
-        raise NumericalProbabilityError(
-            "truncated limiting posterior normalization is nonpositive"
-        )
-    mass = scaled_weight / scaled_normalizer
-    if (
-        not np.all(np.isfinite(mass))
-        or np.any(mass < 0.0)
-        or abs(float(np.sum(mass)) - 1.0) > 1e-12
-    ):
-        raise NumericalProbabilityError(
-            "truncated limiting posterior mass failed normalization"
-        )
-    return mass
 
 
 def _integral(
@@ -93,11 +57,16 @@ def _integral(
     upper: float,
     *,
     points: Sequence[float] = (),
+    absolute_tolerance: float = 0.0,
 ) -> float:
     """Evaluate a nonnegative one-dimensional integral with explicit checks."""
     if not isfinite(lower) or not isfinite(upper):
         raise NumericalProbabilityError(
             "continuous limiting-posterior integration bounds are nonfinite"
+        )
+    if not isfinite(absolute_tolerance) or absolute_tolerance < 0.0:
+        raise NumericalProbabilityError(
+            "continuous limiting-posterior absolute tolerance is invalid"
         )
     if lower >= upper:
         return 0.0
@@ -109,7 +78,7 @@ def _integral(
                 integrand,
                 lower,
                 upper,
-                epsabs=0.0,
+                epsabs=absolute_tolerance,
                 epsrel=_QUADRATURE_RELATIVE_TOLERANCE,
                 limit=_QUADRATURE_LIMIT,
                 points=internal_points or None,
@@ -122,6 +91,7 @@ def _integral(
     estimated_error = float(reported_error)
     convergence_tolerance = max(
         np.finfo(np.float64).tiny,
+        absolute_tolerance,
         _QUADRATURE_RELATIVE_TOLERANCE * abs(result),
     )
     probability_tolerance = max(
@@ -153,6 +123,7 @@ class _TruncatedContinuousDistribution:
     _integration_points: tuple[float, ...] = field(init=False, repr=False)
     _scaled_normalizer: float = field(init=False, repr=False)
     _log_truncation_mass: float = field(init=False, repr=False)
+    _truncation_mass_projected: bool = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if (
@@ -188,12 +159,16 @@ class _TruncatedContinuousDistribution:
         log_truncation_mass = peak_log_kernel + log(normalizer)
         if (
             not isfinite(log_truncation_mass)
-            or log_truncation_mass > _CDF_ROUNDOFF_TOLERANCE
+            or log_truncation_mass > _TRUNCATION_LOG_MASS_PROJECTION_TOLERANCE
         ):
             raise NumericalProbabilityError(
                 "continuous limiting-posterior truncation mass is invalid"
             )
+        projected = log_truncation_mass > 0.0
+        if projected:
+            log_truncation_mass = 0.0
         object.__setattr__(self, "_log_truncation_mass", log_truncation_mass)
+        object.__setattr__(self, "_truncation_mass_projected", projected)
 
     @property
     def log_truncation_mass(self) -> float:
@@ -204,6 +179,11 @@ class _TruncatedContinuousDistribution:
     def truncation_mass(self) -> float:
         """Return the base-law interval mass, allowing honest underflow to zero."""
         return exp(self._log_truncation_mass)
+
+    @property
+    def truncation_mass_projected(self) -> bool:
+        """Report whether roundoff above unit mass was projected to one."""
+        return self._truncation_mass_projected
 
     def _scaled_density(self, value: float) -> float:
         if value < self.lower or value > self.upper:
@@ -262,6 +242,9 @@ class _TruncatedContinuousDistribution:
             self.lower if lower_tail else value,
             value if lower_tail else self.upper,
             points=(*self._integration_points, self.peak),
+            absolute_tolerance=(
+                _QUADRATURE_RELATIVE_TOLERANCE * self._scaled_normalizer
+            ),
         )
         return numerator / self._scaled_normalizer
 
@@ -337,6 +320,9 @@ class _TruncatedContinuousDistribution:
             self.lower,
             self.upper,
             points=(*self._integration_points, self.peak),
+            absolute_tolerance=(
+                _QUADRATURE_RELATIVE_TOLERANCE * self._scaled_normalizer
+            ),
         )
         result = numerator / self._scaled_normalizer
         if (
@@ -359,6 +345,7 @@ class _TruncatedContinuousDistribution:
             self.lower,
             self.upper,
             points=(*self._integration_points, self.peak, *points),
+            absolute_tolerance=(_CDF_ROUNDOFF_TOLERANCE * self._scaled_normalizer),
         )
         probability = numerator / self._scaled_normalizer
         if (
@@ -450,9 +437,15 @@ def _product_quantile(
     if probability >= 1.0:
         return upper
 
+    primary_cdf = (
+        _product_cdf_condition_on_h if positive else _product_cdf_condition_on_p
+    )
+    independent_cdf = (
+        _product_cdf_condition_on_p if positive else _product_cdf_condition_on_h
+    )
     root = brentq(
         lambda value: (
-            _product_cdf_condition_on_h(
+            primary_cdf(
                 value,
                 h_distribution,
                 p_distribution,
@@ -467,14 +460,14 @@ def _product_quantile(
         rtol=8.0 * np.finfo(np.float64).eps,
     )
     result = float(root)
-    direct_probability = _product_cdf_condition_on_h(
+    direct_probability = primary_cdf(
         result,
         h_distribution,
         p_distribution,
         r,
         positive=positive,
     )
-    independent_probability = _product_cdf_condition_on_p(
+    independent_probability = independent_cdf(
         result,
         h_distribution,
         p_distribution,
@@ -576,89 +569,37 @@ class CompactApproximationSupport:
 
 @dataclass(frozen=True, slots=True, init=False)
 class LimitingApproximationFit:
-    """Distinct result for the compactly truncated analytic limit.
-
-    The retained 96-by-96 grid is an immutable visualization discretization.
-    All reported summaries are computed from the continuous conditional laws.
-    """
+    """Distinct result for the compactly truncated continuous analytic limit."""
 
     counts: CellCounts
     design: LocalDesign
     prior: LocalPrior
-    h_nodes: NDArray[np.float64]
-    p_nodes: NDArray[np.float64]
-    mass: NDArray[np.float64]
     h_truncation_mass: float
     p_truncation_mass: float
     h_log_truncation_mass: float
     p_log_truncation_mass: float
+    h_truncation_mass_projected: bool
+    p_truncation_mass_projected: bool
     approximation: Literal[True] = field(default=True, init=False)
     method: Literal["signed_poisson_gamma_beta_limit"] = field(
         default="signed_poisson_gamma_beta_limit", init=False
-    )
-    grid_purpose: Literal["visualization_only"] = field(
-        default="visualization_only", init=False
     )
     assumptions: tuple[str, ...] = field(
         default=(
             "independent signed-Poisson count limit",
             "critical-rate local design",
             "uniform prior on the retained compact rectangle",
-            "retained quadrature grid is for visualization only",
             "asymptotic benchmark only; not the exact finite-cell posterior",
         ),
         init=False,
     )
 
-    def __init__(self) -> None:
+    def __init__(self, *args: object, **kwargs: object) -> None:
         """Prevent public composition of independently produced components."""
+        del args, kwargs
         raise TypeError(
             "use stableboundary.fit_limiting_approximation() to construct a fit"
         )
-
-    @classmethod
-    def _from_components(
-        cls,
-        *,
-        counts: CellCounts,
-        design: LocalDesign,
-        prior: LocalPrior,
-        h_nodes: NDArray[np.float64],
-        p_nodes: NDArray[np.float64],
-        mass: NDArray[np.float64],
-        h_truncation_mass: float,
-        p_truncation_mass: float,
-        h_log_truncation_mass: float,
-        p_log_truncation_mass: float,
-    ) -> Self:
-        """Construct one approximation after validating retained provenance."""
-        result = object.__new__(cls)
-        object.__setattr__(result, "counts", counts)
-        object.__setattr__(result, "design", design)
-        object.__setattr__(result, "prior", prior)
-        object.__setattr__(result, "h_nodes", h_nodes)
-        object.__setattr__(result, "p_nodes", p_nodes)
-        object.__setattr__(result, "mass", mass)
-        object.__setattr__(result, "h_truncation_mass", h_truncation_mass)
-        object.__setattr__(result, "p_truncation_mass", p_truncation_mass)
-        object.__setattr__(result, "h_log_truncation_mass", h_log_truncation_mass)
-        object.__setattr__(result, "p_log_truncation_mass", p_log_truncation_mass)
-        object.__setattr__(result, "approximation", True)
-        object.__setattr__(result, "method", "signed_poisson_gamma_beta_limit")
-        object.__setattr__(result, "grid_purpose", "visualization_only")
-        object.__setattr__(
-            result,
-            "assumptions",
-            (
-                "independent signed-Poisson count limit",
-                "critical-rate local design",
-                "uniform prior on the retained compact rectangle",
-                "retained quadrature grid is for visualization only",
-                "asymptotic benchmark only; not the exact finite-cell posterior",
-            ),
-        )
-        result.__post_init__()
-        return result
 
     def __post_init__(self) -> None:
         if not isinstance(self.counts, CellCounts):
@@ -678,47 +619,54 @@ class LimitingApproximationFit:
             != self.design.n
         ):
             raise ValidationError("approximation counts must form the supplied design")
-        shape = (_NODES, _NODES)
-        retained: list[NDArray[np.float64]] = []
-        for name in ("h_nodes", "p_nodes", "mass"):
-            values = np.asarray(getattr(self, name), dtype=np.float64)
-            if values.shape != shape or not np.all(np.isfinite(values)):
-                raise NumericalProbabilityError(
-                    f"limiting approximation {name} grid is invalid"
-                )
-            copied = np.frombuffer(
-                np.ascontiguousarray(values, dtype=np.float64).tobytes(),
-                dtype=np.float64,
-            ).reshape(shape)
-            retained.append(copied)
-        if np.any(retained[2] < 0.0) or abs(float(np.sum(retained[2])) - 1.0) > 1e-12:
-            raise NumericalProbabilityError(
-                "limiting approximation joint mass must normalize"
-            )
         self._validate_truncation_mass(
             "h", self.h_truncation_mass, self.h_log_truncation_mass
         )
         self._validate_truncation_mass(
             "p", self.p_truncation_mass, self.p_log_truncation_mass
         )
-        for name, values in zip(("h_nodes", "p_nodes", "mass"), retained, strict=True):
-            object.__setattr__(self, name, values)
+        if not isinstance(self.h_truncation_mass_projected, bool) or not isinstance(
+            self.p_truncation_mass_projected, bool
+        ):
+            raise NumericalProbabilityError(
+                "truncation-mass projection evidence must be boolean"
+            )
+        for name, mass, log_mass, projected in (
+            (
+                "h",
+                self.h_truncation_mass,
+                self.h_log_truncation_mass,
+                self.h_truncation_mass_projected,
+            ),
+            (
+                "p",
+                self.p_truncation_mass,
+                self.p_log_truncation_mass,
+                self.p_truncation_mass_projected,
+            ),
+        ):
+            if projected and (mass != 1.0 or log_mass != 0.0):
+                raise NumericalProbabilityError(
+                    f"{name} projected truncation mass must be exactly one"
+                )
 
     @staticmethod
     def _validate_truncation_mass(name: str, mass: float, log_mass: float) -> None:
         if (
             not isfinite(mass)
             or mass < 0.0
-            or mass > 1.0 + _CDF_ROUNDOFF_TOLERANCE
+            or mass > 1.0
             or not isfinite(log_mass)
-            or log_mass > _CDF_ROUNDOFF_TOLERANCE
+            or log_mass > 0.0
         ):
             raise NumericalProbabilityError(f"{name} truncation mass must be valid")
         expected_mass = exp(log_mass)
-        if mass == 0.0:
-            consistent = expected_mass == 0.0
+        if expected_mass == 0.0:
+            consistent = mass == 0.0
+        elif mass == 0.0:
+            consistent = False
         else:
-            consistent = expected_mass > 0.0 and abs(log(mass) - log_mass) <= 1e-12
+            consistent = abs(mass - expected_mass) <= max(ulp(mass), ulp(expected_mass))
         if not consistent:
             raise NumericalProbabilityError(
                 f"{name} truncation mass disagrees with its log mass"
@@ -777,21 +725,6 @@ class LimitingApproximationFit:
             positive=2.0 * self.design.c * h_value * p_value,
             negative=2.0 * self.design.c * h_value * (1.0 - p_value),
         )
-
-    def _values(self, quantity: str) -> NDArray[np.float64]:
-        if quantity == "h":
-            return self.h_nodes
-        if quantity == "p":
-            return self.p_nodes
-        if quantity == "alpha":
-            return 2.0 - self.design.r * self.h_nodes
-        if quantity == "beta":
-            return 2.0 * self.p_nodes - 1.0
-        if quantity == "tau_plus":
-            return self.design.r * self.h_nodes * self.p_nodes
-        if quantity == "tau_minus":
-            return self.design.r * self.h_nodes * (1.0 - self.p_nodes)
-        raise ValidationError(f"unknown approximation quantity: {quantity!r}")
 
     def _h_distribution(self) -> _TruncatedContinuousDistribution:
         return _gamma_distribution(
@@ -866,11 +799,6 @@ class LimitingApproximationFit:
             "assumptions": list(self.assumptions),
             "support": self.support.to_dict(),
             "evidence_status": self.evidence_status,
-            "retained_grid": {
-                "nodes_per_axis": _NODES,
-                "purpose": self.grid_purpose,
-                "used_for_summaries": False,
-            },
             "parameters": {
                 name: self.parameter_summary(name).to_dict() for name in _QUANTITIES
             },
@@ -887,6 +815,10 @@ class LimitingApproximationFit:
             "log_truncation_mass": {
                 "h": self.h_log_truncation_mass,
                 "p": self.p_log_truncation_mass,
+            },
+            "truncation_mass_projected": {
+                "h": self.h_truncation_mass_projected,
+                "p": self.p_truncation_mass_projected,
             },
         }
 
@@ -913,21 +845,6 @@ def fit_limiting_approximation(
     h_rate = 2.0 * design.c
     p_positive = float(1 + counts.n_plus)
     p_negative = float(1 + counts.n_minus)
-    h_axis, h_weights = _axis(selected_prior.h_min, selected_prior.h_max)
-    p_axis, p_weights = _axis(selected_prior.p_min, selected_prior.p_max)
-    h_log_density = (
-        h_shape * log(h_rate)
-        - float(gammaln(h_shape))
-        + (h_shape - 1.0) * np.log(h_axis)
-        - h_rate * h_axis
-    )
-    p_log_density = (
-        (p_positive - 1.0) * np.log(p_axis)
-        + (p_negative - 1.0) * np.log1p(-p_axis)
-        - float(betaln(p_positive, p_negative))
-    )
-    h_mass = _normalized_mass(h_log_density, h_weights)
-    p_mass = _normalized_mass(p_log_density, p_weights)
     h_distribution = _gamma_distribution(
         h_shape,
         h_rate,
@@ -940,20 +857,42 @@ def fit_limiting_approximation(
         selected_prior.p_min,
         selected_prior.p_max,
     )
-    h_grid, p_grid = np.meshgrid(h_axis, p_axis, indexing="ij")
-    joint_mass = np.multiply.outer(h_mass, p_mass)
-    return LimitingApproximationFit._from_components(
-        counts=counts,
-        design=design,
-        prior=selected_prior,
-        h_nodes=h_grid,
-        p_nodes=p_grid,
-        mass=joint_mass,
-        h_truncation_mass=h_distribution.truncation_mass,
-        p_truncation_mass=p_distribution.truncation_mass,
-        h_log_truncation_mass=h_distribution.log_truncation_mass,
-        p_log_truncation_mass=p_distribution.log_truncation_mass,
+    result = object.__new__(LimitingApproximationFit)
+    object.__setattr__(result, "counts", counts)
+    object.__setattr__(result, "design", design)
+    object.__setattr__(result, "prior", selected_prior)
+    object.__setattr__(result, "h_truncation_mass", h_distribution.truncation_mass)
+    object.__setattr__(result, "p_truncation_mass", p_distribution.truncation_mass)
+    object.__setattr__(
+        result, "h_log_truncation_mass", h_distribution.log_truncation_mass
     )
+    object.__setattr__(
+        result, "p_log_truncation_mass", p_distribution.log_truncation_mass
+    )
+    object.__setattr__(
+        result,
+        "h_truncation_mass_projected",
+        h_distribution.truncation_mass_projected,
+    )
+    object.__setattr__(
+        result,
+        "p_truncation_mass_projected",
+        p_distribution.truncation_mass_projected,
+    )
+    object.__setattr__(result, "approximation", True)
+    object.__setattr__(result, "method", "signed_poisson_gamma_beta_limit")
+    object.__setattr__(
+        result,
+        "assumptions",
+        (
+            "independent signed-Poisson count limit",
+            "critical-rate local design",
+            "uniform prior on the retained compact rectangle",
+            "asymptotic benchmark only; not the exact finite-cell posterior",
+        ),
+    )
+    result.__post_init__()
+    return result
 
 
 __all__ = ["fit_limiting_approximation"]

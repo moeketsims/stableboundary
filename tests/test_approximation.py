@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
+from fractions import Fraction
 from math import exp, expm1, lgamma, log, log1p
 from warnings import warn
 
@@ -168,16 +170,27 @@ def test_limiting_approximation_rejects_counts_bound_to_another_full_design() ->
         )
 
 
+def test_limiting_intensities_wrap_huge_real_conversion_overflow() -> None:
+    design = LocalDesign.from_sample_size(64)
+    result = fit_limiting_approximation(_counts(design, negative=1, positive=2), design)
+    with pytest.raises(ValidationError, match="h must be a finite real number"):
+        result.intensities(Fraction(10**10_000, 1), 0.5)  # type: ignore[arg-type]
+
+
 def test_limiting_posterior_is_compactly_truncated_not_unbounded() -> None:
     design = LocalDesign.from_sample_size(64)
     prior = LocalPrior(design=design, h_min=0.25, h_max=0.75, p_min=0.2, p_max=0.8)
     result = fit_limiting_approximation(
         _counts(design, negative=0, positive=0), design, prior
     )
-    assert np.min(result.h_nodes) > prior.h_min
-    assert np.max(result.h_nodes) < prior.h_max
-    assert np.min(result.p_nodes) > prior.p_min
-    assert np.max(result.p_nodes) < prior.p_max
+    assert (result._h_distribution().lower, result._h_distribution().upper) == (
+        prior.h_min,
+        prior.h_max,
+    )
+    assert (result._p_distribution().lower, result._p_distribution().upper) == (
+        prior.p_min,
+        prior.p_max,
+    )
     assert result.h_truncation_mass < 1.0
     assert result.p_truncation_mass == pytest.approx(0.6, rel=1e-12)
     assert result.parameter_summary("h").mean != pytest.approx(
@@ -521,6 +534,132 @@ def test_subnormal_gamma_beta_cdfs_share_one_scaled_normalizer() -> None:
         ) == pytest.approx(1.0, abs=2e-11)
 
 
+def test_positive_beta_truncation_mass_can_be_subnormal() -> None:
+    design = LocalDesign.from_sample_size(64)
+    prior = LocalPrior(
+        design=design,
+        h_min=0.25,
+        h_max=4.0,
+        p_min=1e-5,
+        p_max=1.2e-5,
+    )
+    result = fit_limiting_approximation(
+        _counts(design, negative=0, positive=design.n), design, prior
+    )
+
+    assert 0.0 < result.p_truncation_mass < np.finfo(np.float64).tiny
+    assert result.p_truncation_mass == exp(result.p_log_truncation_mass)
+    assert result.p_truncation_mass == pytest.approx(1.402e-320, rel=2e-4)
+    assert result.p_log_truncation_mass == pytest.approx(-736.4892611636092, abs=2e-12)
+
+
+def test_reflected_beta_truncation_mass_can_be_subnormal() -> None:
+    design = LocalDesign.from_sample_size(64)
+    prior = LocalPrior(
+        design=design,
+        h_min=0.25,
+        h_max=4.0,
+        p_min=1.0 - 1.2e-5,
+        p_max=1.0 - 1e-5,
+    )
+    result = fit_limiting_approximation(
+        _counts(design, negative=design.n, positive=0), design, prior
+    )
+
+    assert 0.0 < result.p_truncation_mass < np.finfo(np.float64).tiny
+    assert result.p_truncation_mass == exp(result.p_log_truncation_mass)
+
+
+def test_gamma_truncation_mass_can_be_subnormal() -> None:
+    design = LocalDesign.from_sample_size(64)
+    prior = LocalPrior(
+        design=design,
+        h_min=0.00014,
+        h_max=0.00018,
+        p_min=0.05,
+        p_max=0.95,
+    )
+    result = fit_limiting_approximation(
+        _counts(design, negative=0, positive=design.n), design, prior
+    )
+
+    assert 0.0 < result.h_truncation_mass < np.finfo(np.float64).tiny
+    assert result.h_truncation_mass == exp(result.h_log_truncation_mass)
+    assert result.h_truncation_mass == pytest.approx(1.75056517e-315, rel=2e-8)
+    assert result.h_log_truncation_mass == pytest.approx(-724.7543656018664, abs=2e-12)
+
+
+def test_truncation_mass_validation_is_ulp_aware_at_normal_boundary() -> None:
+    tiny = float(np.finfo(np.float64).tiny)
+    boundary_log = log(tiny)
+    for log_mass in (
+        float(np.nextafter(boundary_log, -np.inf)),
+        boundary_log,
+        float(np.nextafter(boundary_log, np.inf)),
+    ):
+        expected_mass = exp(log_mass)
+        approximation_module.LimitingApproximationFit._validate_truncation_mass(
+            "boundary", expected_mass, log_mass
+        )
+        adjacent_mass = float(np.nextafter(expected_mass, np.inf))
+        approximation_module.LimitingApproximationFit._validate_truncation_mass(
+            "boundary", adjacent_mass, log_mass
+        )
+
+    underflow_log = log(float(np.nextafter(0.0, 1.0))) - 1.0
+    approximation_module.LimitingApproximationFit._validate_truncation_mass(
+        "underflow", 0.0, underflow_log
+    )
+    with pytest.raises(NumericalProbabilityError, match="disagrees"):
+        approximation_module.LimitingApproximationFit._validate_truncation_mass(
+            "underflow", float(np.nextafter(0.0, 1.0)), underflow_log
+        )
+    minimum_subnormal = float(np.nextafter(0.0, 1.0))
+    with pytest.raises(NumericalProbabilityError, match="disagrees"):
+        approximation_module.LimitingApproximationFit._validate_truncation_mass(
+            "representable", 0.0, log(minimum_subnormal)
+        )
+
+    ordinary_log_mass = log(0.6)
+    with pytest.raises(NumericalProbabilityError, match="disagrees"):
+        approximation_module.LimitingApproximationFit._validate_truncation_mass(
+            "ordinary", 0.600000000001, ordinary_log_mass
+        )
+
+
+def test_small_positive_truncation_log_mass_is_projected_with_evidence() -> None:
+    design = LocalDesign.from_sample_size(200_000)
+    prior = LocalPrior(
+        design=design,
+        h_min=4_000.0,
+        h_max=6_000.0,
+        p_min=0.9,
+        p_max=0.9999,
+    )
+    result = fit_limiting_approximation(
+        _counts(design, negative=0, positive=10_000), design, prior
+    )
+
+    assert result.h_truncation_mass == 1.0
+    assert result.h_log_truncation_mass == 0.0
+    assert result.h_truncation_mass_projected is True
+    assert result.p_truncation_mass_projected is False
+    assert result.summary()["truncation_mass_projected"] == {
+        "h": True,
+        "p": False,
+    }
+
+
+def test_truncation_log_mass_beyond_projection_tolerance_is_rejected() -> None:
+    with pytest.raises(NumericalProbabilityError, match="truncation mass is invalid"):
+        approximation_module._TruncatedContinuousDistribution(
+            lower=0.0,
+            upper=1.0,
+            peak=0.5,
+            log_kernel=lambda value: 4e-11,
+        )
+
+
 def test_reflected_subnormal_beta_tail_preserves_cdf_survival_symmetry() -> None:
     design = LocalDesign.from_sample_size(5_000)
     positive_prior = LocalPrior(
@@ -593,10 +732,9 @@ def test_concentrated_continuous_means_use_gamma_beta_independence() -> None:
     for quantity, value in expected.items():
         assert result._continuous_mean(quantity) == pytest.approx(value, abs=1e-10)
 
-    grid_h_mean = float(np.sum(result.mass * result.h_nodes))
-    grid_p_mean = float(np.sum(result.mass * result.p_nodes))
-    assert abs(grid_h_mean - h_mean) > 1e-6
-    assert abs(grid_p_mean - p_mean) > 1e-10
+    assert not hasattr(result, "h_nodes")
+    assert not hasattr(result, "p_nodes")
+    assert not hasattr(result, "mass")
     assert result.parameter_summary("h").mean == pytest.approx(h_mean, abs=1e-10)
     assert result.parameter_summary("p").mean == pytest.approx(p_mean, abs=1e-10)
 
@@ -673,6 +811,50 @@ def test_concentrated_product_quantiles_match_uniformized_reference() -> None:
         assert actual == pytest.approx(expected, abs=1e-9)
 
 
+@pytest.mark.slow
+@pytest.mark.parametrize("n", [40_000, 75_000, 100_000])
+def test_large_concentrated_product_summaries_pass_independent_cdf_checks(
+    n: int,
+) -> None:
+    design = LocalDesign.from_sample_size(n)
+    prior = LocalPrior(
+        design=design,
+        h_min=0.25,
+        h_max=4.0,
+        p_min=0.01,
+        p_max=0.02,
+    )
+    result = fit_limiting_approximation(
+        _counts(design, negative=0, positive=n), design, prior
+    )
+    h_distribution = result._h_distribution()
+    p_distribution = result._p_distribution()
+
+    for quantity, positive in (("tau_plus", True), ("tau_minus", False)):
+        parameter = result.parameter_summary(quantity)
+        assert (
+            parameter.credible_interval.lower
+            <= parameter.median
+            <= parameter.credible_interval.upper
+        )
+        direct = approximation_module._product_cdf_condition_on_h(
+            parameter.median,
+            h_distribution,
+            p_distribution,
+            design.r,
+            positive=positive,
+        )
+        independent = approximation_module._product_cdf_condition_on_p(
+            parameter.median,
+            h_distribution,
+            p_distribution,
+            design.r,
+            positive=positive,
+        )
+        assert abs(direct - 0.5) <= 1e-9
+        assert abs(independent - 0.5) <= 1e-9
+
+
 def test_limiting_continuous_summaries_are_normalized_and_inside_domains() -> None:
     design = LocalDesign.from_sample_size(64)
     result = fit_limiting_approximation(_counts(design, negative=2, positive=3), design)
@@ -746,42 +928,29 @@ def test_product_quantile_requires_independent_final_cdf_check(
         )
 
 
-def test_limiting_fit_is_controlled_and_grid_bytes_are_immutable() -> None:
+def test_limiting_fit_is_controlled_and_exposes_no_misleading_fixed_grid() -> None:
     with pytest.raises(TypeError, match="fit_limiting_approximation"):
         approximation_module.LimitingApproximationFit()
 
     design = LocalDesign.from_sample_size(64)
     result = fit_limiting_approximation(_counts(design, negative=1, positive=2), design)
-    for retained in (result.h_nodes, result.p_nodes, result.mass):
-        assert not retained.flags.writeable
-        assert not retained.flags.owndata
-        with pytest.raises(ValueError):
-            retained.setflags(write=True)
-        with pytest.raises(ValueError):
-            retained[0, 0] = 0.0
-
     summary = result.summary()
-    assert result.grid_purpose == "visualization_only"
-    assert summary["retained_grid"] == {
-        "nodes_per_axis": approximation_module._NODES,
-        "purpose": "visualization_only",
-        "used_for_summaries": False,
-    }
+    assert not hasattr(result, "h_nodes")
+    assert not hasattr(result, "p_nodes")
+    assert not hasattr(result, "mass")
+    assert "retained_grid" not in summary
+    assert (
+        "_from_components" not in approximation_module.LimitingApproximationFit.__dict__
+    )
+    assert result.counts.design == result.design
+    assert result.prior.design == result.design
 
-    conflicting_design = LocalDesign.from_sample_size(design.n, c=1.25)
-    with pytest.raises(ValidationError, match="full supplied design"):
-        approximation_module.LimitingApproximationFit._from_components(
-            counts=result.counts,
-            design=conflicting_design,
-            prior=LocalPrior.default(conflicting_design),
-            h_nodes=result.h_nodes,
-            p_nodes=result.p_nodes,
-            mass=result.mass,
-            h_truncation_mass=result.h_truncation_mass,
-            p_truncation_mass=result.p_truncation_mass,
-            h_log_truncation_mass=result.h_log_truncation_mass,
-            p_log_truncation_mass=result.p_log_truncation_mass,
-        )
+    with pytest.raises(TypeError, match="fit_limiting_approximation"):
+        approximation_module.LimitingApproximationFit(counts=result.counts)
+    with pytest.raises(TypeError, match="fit_limiting_approximation"):
+        replace(result)
+    with pytest.raises(TypeError, match="fit_limiting_approximation"):
+        replace(result, counts=result.counts)
 
 
 def test_exact_fitter_has_no_limiting_approximation_dependency() -> None:
