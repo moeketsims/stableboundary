@@ -1,9 +1,12 @@
-"""Run the fixed-seed, known-nuisance stableboundary example."""
+"""Run the audited known-nuisance fit and separate seeded simulation."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
+
+import numpy as np
 
 import stableboundary as sb
 
@@ -13,8 +16,22 @@ KNOWN_LOC = 0.0
 KNOWN_SCALE = 1.0
 
 
+def _canonical_f8(values: np.ndarray) -> bytes:
+    return np.ascontiguousarray(values, dtype="<f8").tobytes(order="C")
+
+
+def _counts(values: np.ndarray, threshold: float) -> dict[str, int]:
+    n_minus = int(np.count_nonzero(values <= -threshold))
+    n_plus = int(np.count_nonzero(values >= threshold))
+    return {
+        "n_minus": n_minus,
+        "n_zero": int(values.size - n_minus - n_plus),
+        "n_plus": n_plus,
+    }
+
+
 def run_example() -> dict[str, Any]:
-    """Simulate and fit one exact finite-cell posterior through the public API."""
+    """Fit a fixed cell witness and separately audit seeded stable simulation."""
     design = sb.LocalDesign.from_sample_size(SAMPLE_SIZE)
     truth = sb.StableParams(
         alpha=2.0 - design.r * 1.5,
@@ -22,14 +39,17 @@ def run_example() -> dict[str, Any]:
         loc=KNOWN_LOC,
         scale=KNOWN_SCALE,
     )
-    observations = sb.simulate(truth, size=SAMPLE_SIZE, random_state=SEED)
+    observations = np.zeros(SAMPLE_SIZE, dtype=np.float64)
+    observations[0] = -(design.threshold + 1.0)
+    observations[-3:] = design.threshold + 1.0
+    fixture_bytes = _canonical_f8(observations)
     fit = sb.fit_known_nuisance(
         observations,
         loc=KNOWN_LOC,
         scale=KNOWN_SCALE,
         design=design,
         prior=sb.LocalPrior.default(design),
-        provenance="fixed by the simulation design",
+        provenance="fixed cell-count witness derived from the prespecified design",
         quadrature=sb.QuadratureConfig(
             base_nodes=20,
             refined_nodes=32,
@@ -40,6 +60,8 @@ def run_example() -> dict[str, Any]:
 
     summary = fit.summary()
     audit = fit.audit_record()
+    simulated = sb.simulate(truth, size=SAMPLE_SIZE, random_state=SEED)
+    simulation_bytes = _canonical_f8(simulated)
     return {
         "schema_version": audit["schema_version"],
         "package_version": audit["package_version"],
@@ -53,6 +75,27 @@ def run_example() -> dict[str, Any]:
             "beta": truth.beta,
             "loc": truth.loc,
             "scale": truth.scale,
+        },
+        "inference_fixture": {
+            "construction": "[-(threshold+1)] + [0]*4996 + [threshold+1]*3",
+            "dtype": "<f8",
+            "nbytes": len(fixture_bytes),
+            "sha256": hashlib.sha256(fixture_bytes).hexdigest(),
+        },
+        "simulation": {
+            "dtype": "<f8",
+            "rng_algorithm": (
+                f"numpy.random.{np.random.default_rng(SEED).bit_generator.__class__.__name__}"
+            ),
+            "simulator_algorithm": (
+                "scipy.stats.levy_stable.rvs:S0:private-generator:v1"
+            ),
+            "numpy_version": np.__version__,
+            "scipy_version": audit["backend"]["library_version"],
+            "sample_sha256": hashlib.sha256(simulation_bytes).hexdigest(),
+            "counts": _counts(simulated, design.threshold),
+            "minimum": float(np.min(simulated)),
+            "maximum": float(np.max(simulated)),
         },
         "design": audit["design"],
         "prior": audit["prior"],

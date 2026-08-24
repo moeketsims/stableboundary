@@ -34,12 +34,17 @@ python -m pip install .
 Released artifacts can instead be installed by passing the wheel or source
 archive path to `python -m pip install`.
 
-## Fixed-seed known-nuisance fit
+## Audited known-nuisance fit
 
-The executable example first fixes a design for `n=5000`, derives the simulated
-truth from that design, and only then simulates observations. The source
-distribution includes it as `examples/known_nuisance_fit.py`. From a source
-checkout or an unpacked source distribution, run:
+The executable artifact example separates inferential evidence from simulator
+evidence. Its posterior is fitted to a deterministic 5000-observation witness
+with signed-cell counts `(1, 4996, 3)`. Because the three-cell likelihood is
+count-sufficient, the witness makes the inferential input transparent and keeps
+it independent of changes to SciPy's random sampler. The example then runs a
+separate fixed-seed `S0` simulation and reports the canonical little-endian
+sample hash, counts, extrema, algorithms, and runtime versions. The source
+distribution includes the example as `examples/known_nuisance_fit.py`. From a
+source checkout or an unpacked source distribution, run:
 
 ```console
 python examples/known_nuisance_fit.py
@@ -88,10 +93,12 @@ refinement evidence, identification diagnostics, and warnings. The signed gaps
 `tau_plus` and `tau_minus` are local shape coordinates, not threshold-free tail
 probabilities.
 
-The example uses a deterministic seed to make the workflow auditable. Exact
-floating-point values can still change across supported NumPy and SciPy
-versions, so interpret the finite summaries and status rather than treating the
-printed digits as a cross-version proof certificate.
+The artifact smoke test accepts simulated evidence only for explicitly measured
+NumPy/SciPy combinations; an unknown patch combination fails closed. Posterior
+summaries are bound both to retained regression values and to a higher-order
+reference generated without importing `stableboundary`. These checks make the
+artifact reproducible and sensitive to stale or hard-coded output, but they do
+not turn ordinary floating-point calculations into a proof certificate.
 
 ## Maintainer checks
 
@@ -102,6 +109,7 @@ uv sync --extra dev --locked
 uv run --frozen ruff check .
 uv run --frozen ruff format --check .
 uv run --frozen mypy src
+uv run --frozen python scripts/generate_artifact_oracle.py --check scripts/artifact_oracle.json
 uv run --frozen coverage run --branch -m pytest -q -m "not installed"
 uv run --frozen coverage report --fail-under=80
 uv run --frozen python -m build --no-isolation
@@ -112,6 +120,14 @@ uv run --frozen pytest -q tests/test_installed_package.py -m installed
 
 The final test installs both freshly built archives into separate clean virtual
 environments and runs the same example from outside the checkout.
+
+The oracle regeneration command independently evaluates the exact `S0`
+three-cell likelihood with 48- and 64-node tensor Gauss--Legendre rules and
+cross-checks selected cell probabilities by direct Gil--Pelaez Fourier
+inversion. The generator imports NumPy and SciPy but is forbidden by test from
+importing `stableboundary`. Review and explicitly approve any new NumPy/SciPy
+simulation key and its sample hash before updating `scripts/artifact_oracle.json`;
+the smoke verifier intentionally rejects unmeasured combinations.
 
 ## Current limitations
 

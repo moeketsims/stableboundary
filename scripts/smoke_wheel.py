@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tarfile
@@ -32,6 +33,7 @@ from urllib.request import url2pathname
 REPOSITORY = Path(__file__).resolve().parents[1]
 DIST = REPOSITORY / "dist"
 EXAMPLE = REPOSITORY / "examples" / "known_nuisance_fit.py"
+ORACLE = REPOSITORY / "scripts" / "artifact_oracle.json"
 PROJECT_NAME = "stableboundary"
 PROJECT_VERSION = "0.1.0"
 EXPECTED_WHEEL = f"{PROJECT_NAME}-{PROJECT_VERSION}-py3-none-any.whl"
@@ -1025,6 +1027,288 @@ print(json.dumps({
     return decoded
 
 
+def _oracle_document() -> dict[str, Any]:
+    try:
+        decoded = json.loads(_repository_file(ORACLE))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("artifact oracle is not valid UTF-8 JSON") from error
+    expected = {
+        "schema_version",
+        "provenance",
+        "independent_reference",
+        "fixture",
+        "simulation_contract",
+        "known_nuisance",
+        "design",
+        "prior",
+        "counts",
+        "quadrature",
+        "parameters",
+        "posterior_mass",
+        "identification",
+        "refinement",
+        "warnings",
+        "tolerances",
+    }
+    if not isinstance(decoded, dict) or set(decoded) != expected:
+        raise RuntimeError("artifact oracle has an unexpected schema")
+    if decoded["schema_version"] != 1:
+        raise RuntimeError("artifact oracle has an unsupported schema version")
+    return decoded
+
+
+def _installed_science_probe(
+    python: Path, *, cwd: Path, artifact: Path
+) -> dict[str, Any]:
+    """Recompute the public experiment without importing its example module."""
+    source = r"""
+import hashlib
+import json
+
+import numpy as np
+import stableboundary as sb
+
+n = 5000
+seed = 20260824
+design = sb.LocalDesign.from_sample_size(n)
+truth = sb.StableParams(alpha=2.0-design.r*1.5, beta=0.35, loc=0.0, scale=1.0)
+observations = np.zeros(n, dtype=np.float64)
+observations[0] = -(design.threshold + 1.0)
+observations[-3:] = design.threshold + 1.0
+fixture_bytes = np.ascontiguousarray(observations, dtype="<f8").tobytes(order="C")
+fit = sb.fit_known_nuisance(
+    observations,
+    loc=0.0,
+    scale=1.0,
+    design=design,
+    prior=sb.LocalPrior.default(design),
+    provenance="fixed cell-count witness derived from the prespecified design",
+    quadrature=sb.QuadratureConfig(
+        base_nodes=20,
+        refined_nodes=32,
+        refinement_tolerance=0.002,
+        common_grid_points=65,
+    ),
+)
+reflected_fit = sb.fit_known_nuisance(
+    -observations,
+    loc=0.0,
+    scale=1.0,
+    design=design,
+    prior=sb.LocalPrior.default(design),
+    provenance="reflected fixed cell-count witness",
+    quadrature=sb.QuadratureConfig(
+        base_nodes=20,
+        refined_nodes=32,
+        refinement_tolerance=0.002,
+        common_grid_points=65,
+    ),
+)
+summary = fit.summary()
+audit = fit.audit_record()
+reflected_summary = reflected_fit.summary()
+reflected_audit = reflected_fit.audit_record()
+simulated = sb.simulate(truth, size=n, random_state=seed)
+simulation_bytes = np.ascontiguousarray(simulated, dtype="<f8").tobytes(order="C")
+n_minus = int(np.count_nonzero(simulated <= -design.threshold))
+n_plus = int(np.count_nonzero(simulated >= design.threshold))
+payload = {
+    "schema_version": audit["schema_version"],
+    "package_version": audit["package_version"],
+    "status": summary["status"],
+    "method": summary["method"],
+    "parameterization": summary["parameterization"],
+    "known_nuisance": audit["known_nuisance"],
+    "seed": seed,
+    "truth": {
+        "alpha": truth.alpha,
+        "beta": truth.beta,
+        "loc": truth.loc,
+        "scale": truth.scale,
+    },
+    "inference_fixture": {
+        "construction": "[-(threshold+1)] + [0]*4996 + [threshold+1]*3",
+        "dtype": "<f8",
+        "nbytes": len(fixture_bytes),
+        "sha256": hashlib.sha256(fixture_bytes).hexdigest(),
+    },
+    "simulation": {
+        "dtype": "<f8",
+        "rng_algorithm": (
+            "numpy.random."
+            f"{np.random.default_rng(seed).bit_generator.__class__.__name__}"
+        ),
+        "simulator_algorithm": "scipy.stats.levy_stable.rvs:S0:private-generator:v1",
+        "numpy_version": np.__version__,
+        "scipy_version": audit["backend"]["library_version"],
+        "sample_sha256": hashlib.sha256(simulation_bytes).hexdigest(),
+        "counts": {
+            "n_minus": n_minus,
+            "n_zero": int(n - n_minus - n_plus),
+            "n_plus": n_plus,
+        },
+        "minimum": float(np.min(simulated)),
+        "maximum": float(np.max(simulated)),
+    },
+    "design": audit["design"],
+    "prior": audit["prior"],
+    "counts": audit["counts"],
+    "quadrature": audit["quadrature"],
+    "parameters": summary["parameters"],
+    "posterior_mass": float(fit.posterior.mass.sum()),
+    "identification": summary["identification"],
+    "refinement": audit["refinement"],
+    "backend": audit["backend"],
+    "warnings": summary["warnings"],
+}
+print(json.dumps({
+    "primary": payload,
+    "reflection": {
+        "status": reflected_summary["status"],
+        "method": reflected_summary["method"],
+        "parameterization": reflected_summary["parameterization"],
+        "counts": reflected_audit["counts"],
+        "log_normalizer": reflected_audit["quadrature"]["log_normalizer"],
+        "parameters": reflected_summary["parameters"],
+        "identification": reflected_summary["identification"],
+        "warnings": reflected_summary["warnings"],
+    },
+}, sort_keys=True, allow_nan=False))
+"""
+    decoded = json.loads(
+        _run(
+            [str(python), "-I", "-c", source],
+            cwd=cwd,
+            stage=f"independent installed science probe for {artifact.name}",
+            timeout_seconds=EXAMPLE_TIMEOUT_SECONDS,
+            capture=True,
+        )
+    )
+    if not isinstance(decoded, dict):
+        raise RuntimeError("independent installed science probe returned invalid JSON")
+    return decoded
+
+
+def _independent_fixture_identity(threshold: float) -> dict[str, object]:
+    values = (-(threshold + 1.0),) + (0.0,) * 4_996 + (threshold + 1.0,) * 3
+    content = struct.pack("<5000d", *values)
+    return {
+        "construction": "[-(threshold+1)] + [0]*4996 + [threshold+1]*3",
+        "dtype": "<f8",
+        "nbytes": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
+
+
+def _reference_close(
+    name: str,
+    actual: object,
+    expected: object,
+    *,
+    tolerance: float,
+) -> float:
+    actual_value = _finite_float(name, actual)
+    expected_value = _finite_float(f"oracle {name}", expected)
+    if not math.isclose(
+        actual_value,
+        expected_value,
+        rel_tol=0.0,
+        abs_tol=tolerance,
+    ):
+        raise RuntimeError(
+            f"installed example {name} differs from its trusted numerical reference"
+        )
+    return actual_value
+
+
+def _trusted_numerical_oracle(
+    oracle: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    provenance = _require_keys(
+        "oracle provenance",
+        oracle["provenance"],
+        {"method", "validated_environments"},
+    )
+    if provenance["method"] != (
+        "Regression values were reproduced bit-for-bit in the listed environments. "
+        "Independent accuracy values and Fourier cell checks are generated by "
+        "scripts/generate_artifact_oracle.py, which does not import stableboundary."
+    ):
+        raise RuntimeError("artifact oracle has unrecognized numerical provenance")
+    environments = provenance["validated_environments"]
+    if not isinstance(environments, list) or not environments:
+        raise RuntimeError("artifact oracle has no validated environments")
+
+    independent = _require_keys(
+        "independent oracle",
+        oracle["independent_reference"],
+        {
+            "method",
+            "orders",
+            "accuracy_tolerances",
+            "reference",
+            "maximum_order_absolute_difference",
+            "maximum_fourier_cell_absolute_difference",
+        },
+    )
+    if independent["method"] != (
+        "Independent SciPy S0 cell evaluation; 48/64 tensor Gauss-Legendre "
+        "quadrature; monotone PCHIP marginal and conditional-CDF inversion"
+    ) or independent["orders"] != [48, 64]:
+        raise RuntimeError("artifact oracle changed its independent derivation")
+    if (
+        _finite_float(
+            "oracle maximum order difference",
+            independent["maximum_order_absolute_difference"],
+        )
+        > 2e-5
+    ):
+        raise RuntimeError("artifact oracle independent quadrature did not converge")
+    if (
+        _finite_float(
+            "oracle maximum Fourier difference",
+            independent["maximum_fourier_cell_absolute_difference"],
+        )
+        > 5e-11
+    ):
+        raise RuntimeError("artifact oracle independent Fourier cross-check failed")
+
+    reference = _require_keys(
+        "independent numerical reference",
+        independent["reference"],
+        {
+            "order",
+            "design",
+            "log_normalizer",
+            "posterior_mass",
+            "parameters",
+            "identification",
+        },
+    )
+    if reference["order"] != 64:
+        raise RuntimeError("artifact oracle changed its reference quadrature order")
+    accuracy = _require_keys(
+        "independent accuracy tolerances",
+        independent["accuracy_tolerances"],
+        {"log_normalizer", "posterior_mass", "parameters", "identification"},
+    )
+    tolerances = _require_keys(
+        "oracle tolerances",
+        oracle["tolerances"],
+        {
+            "main",
+            "tau",
+            "algebraic",
+            "posterior_mass",
+            "refinement_absolute",
+            "refinement_near_zero_cutoff",
+            "refinement_near_zero_floor",
+            "refinement_near_zero_relative",
+        },
+    )
+    return reference, accuracy, tolerances
+
+
 def _finite_float(name: str, value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise RuntimeError(f"installed example returned nonnumeric {name}")
@@ -1112,7 +1396,12 @@ def _validate_parameter_summary(
     }
 
 
-def _validate_refinement(refinement: object) -> None:
+def _validate_refinement(
+    refinement: object,
+    *,
+    expected: object,
+    tolerance_config: object,
+) -> None:
     values = _require_keys(
         "refinement",
         refinement,
@@ -1126,17 +1415,53 @@ def _validate_refinement(refinement: object) -> None:
             "converged",
         },
     )
-    if values["converged"] is not True:
+    expected_values = _require_keys(
+        "oracle refinement",
+        expected,
+        {
+            "tolerance",
+            "common_grid_points",
+            "joint_total_variation",
+            "log_normalizer_change",
+            "summary_changes",
+            "predictive_tail",
+            "converged",
+        },
+    )
+    configured_tolerances = _require_keys(
+        "oracle tolerances",
+        tolerance_config,
+        {
+            "main",
+            "tau",
+            "algebraic",
+            "posterior_mass",
+            "refinement_absolute",
+            "refinement_near_zero_cutoff",
+            "refinement_near_zero_floor",
+            "refinement_near_zero_relative",
+        },
+    )
+    if (
+        values["converged"] is not True
+        or values["converged"] is not expected_values["converged"]
+    ):
         raise RuntimeError(
             "installed example did not retain passing refinement evidence"
         )
     tolerance = _finite_float("refinement tolerance", values["tolerance"])
-    if tolerance != 0.002:
+    expected_tolerance = _finite_float(
+        "oracle refinement tolerance", expected_values["tolerance"]
+    )
+    if tolerance != 0.002 or tolerance != expected_tolerance:
         raise RuntimeError("installed example changed the fixed refinement tolerance")
     common_grid_points = _strict_nonnegative_int(
         "refinement common grid points", values["common_grid_points"]
     )
-    if common_grid_points != 65:
+    if (
+        common_grid_points != 65
+        or common_grid_points != expected_values["common_grid_points"]
+    ):
         raise RuntimeError("installed example changed the fixed common grid")
 
     components: dict[str, float] = {
@@ -1147,8 +1472,23 @@ def _validate_refinement(refinement: object) -> None:
             "refinement log-normalizer change", values["log_normalizer_change"]
         ),
     }
+    expected_components: dict[str, float] = {
+        "joint total variation": _finite_float(
+            "oracle refinement total variation",
+            expected_values["joint_total_variation"],
+        ),
+        "log-normalizer change": _finite_float(
+            "oracle refinement log-normalizer change",
+            expected_values["log_normalizer_change"],
+        ),
+    }
     summary_changes = _require_keys(
         "refinement summary changes", values["summary_changes"], QUANTITIES
+    )
+    expected_summary_changes = _require_keys(
+        "oracle refinement summary changes",
+        expected_values["summary_changes"],
+        QUANTITIES,
     )
     summary_component_names = {
         "mean",
@@ -1162,9 +1502,19 @@ def _validate_refinement(refinement: object) -> None:
             raw_changes,
             summary_component_names,
         )
+        expected_changes = _require_keys(
+            f"oracle {quantity} refinement changes",
+            expected_summary_changes[quantity],
+            summary_component_names,
+        )
         for component_name, raw_value in changes.items():
-            components[f"{quantity} {component_name}"] = _finite_float(
+            component_key = f"{quantity} {component_name}"
+            components[component_key] = _finite_float(
                 f"{quantity} {component_name} refinement", raw_value
+            )
+            expected_components[component_key] = _finite_float(
+                f"oracle {quantity} {component_name} refinement",
+                expected_changes[component_name],
             )
 
     predictive = _require_keys(
@@ -1172,9 +1522,17 @@ def _validate_refinement(refinement: object) -> None:
         values["predictive_tail"],
         {"negative", "positive"},
     )
+    expected_predictive = _require_keys(
+        "oracle predictive-tail refinement",
+        expected_values["predictive_tail"],
+        {"negative", "positive"},
+    )
     for side in ("negative", "positive"):
         components[f"predictive {side}"] = _finite_float(
             f"predictive {side} refinement", predictive[side]
+        )
+        expected_components[f"predictive {side}"] = _finite_float(
+            f"oracle predictive {side} refinement", expected_predictive[side]
         )
 
     invalid = {
@@ -1187,8 +1545,78 @@ def _validate_refinement(refinement: object) -> None:
             f"installed example has refinement components above 0.002: {invalid!r}"
         )
 
+    absolute_tolerance = _finite_float(
+        "oracle refinement absolute tolerance",
+        configured_tolerances["refinement_absolute"],
+    )
+    near_zero_cutoff = _finite_float(
+        "oracle refinement near-zero cutoff",
+        configured_tolerances["refinement_near_zero_cutoff"],
+    )
+    near_zero_floor = _finite_float(
+        "oracle refinement near-zero floor",
+        configured_tolerances["refinement_near_zero_floor"],
+    )
+    near_zero_relative = _finite_float(
+        "oracle refinement near-zero relative tolerance",
+        configured_tolerances["refinement_near_zero_relative"],
+    )
+    if (
+        min(
+            absolute_tolerance,
+            near_zero_cutoff,
+            near_zero_floor,
+            near_zero_relative,
+        )
+        <= 0.0
+    ):
+        raise RuntimeError("artifact oracle has invalid refinement tolerances")
+    for name, actual_value in components.items():
+        expected_value = expected_components[name]
+        if expected_value <= 0.0 or actual_value <= 0.0:
+            raise RuntimeError(
+                f"installed example lost nonzero refinement evidence for {name}"
+            )
+        component_tolerance = (
+            max(near_zero_floor, expected_value * near_zero_relative)
+            if expected_value < near_zero_cutoff
+            else absolute_tolerance
+        )
+        _reference_close(
+            f"refinement {name}",
+            actual_value,
+            expected_value,
+            tolerance=component_tolerance,
+        )
 
-def _validate_example(payload: dict[str, Any]) -> None:
+
+def _validate_example(
+    payload: dict[str, Any],
+    *,
+    runtime_versions: dict[str, Any] | None = None,
+) -> None:
+    oracle = _oracle_document()
+    independent_reference, independent_accuracy, tolerance_config = (
+        _trusted_numerical_oracle(oracle)
+    )
+    main_tolerance = _finite_float("oracle main tolerance", tolerance_config["main"])
+    tau_tolerance = _finite_float("oracle tau tolerance", tolerance_config["tau"])
+    algebraic_tolerance = _finite_float(
+        "oracle algebraic tolerance", tolerance_config["algebraic"]
+    )
+    posterior_mass_tolerance = _finite_float(
+        "oracle posterior-mass tolerance", tolerance_config["posterior_mass"]
+    )
+    if (
+        min(
+            main_tolerance,
+            tau_tolerance,
+            algebraic_tolerance,
+            posterior_mass_tolerance,
+        )
+        <= 0.0
+    ):
+        raise RuntimeError("artifact oracle has invalid numerical tolerances")
     expected_top_level = {
         "schema_version",
         "package_version",
@@ -1198,6 +1626,8 @@ def _validate_example(payload: dict[str, Any]) -> None:
         "known_nuisance",
         "seed",
         "truth",
+        "inference_fixture",
+        "simulation",
         "design",
         "prior",
         "counts",
@@ -1236,15 +1666,8 @@ def _validate_example(payload: dict[str, Any]) -> None:
         payload.get("known_nuisance"),
         {"loc", "scale", "mode", "provenance"},
     )
-    if nuisance.get("mode") != "externally_known":
-        raise RuntimeError("installed example did not retain fixed nuisance provenance")
-    if _finite_float("known location", nuisance["loc"]) != 0.0:
-        raise RuntimeError("installed example changed the fixed known location")
-    if _finite_float("known scale", nuisance["scale"]) != 1.0:
-        raise RuntimeError("installed example changed the fixed known scale")
-    provenance = nuisance["provenance"]
-    if not isinstance(provenance, str) or not provenance.strip():
-        raise RuntimeError("installed example returned invalid nuisance provenance")
+    if nuisance != oracle["known_nuisance"]:
+        raise RuntimeError("installed example changed exact nuisance provenance")
 
     design = _require_keys(
         "design",
@@ -1290,6 +1713,25 @@ def _validate_example(payload: dict[str, Any]) -> None:
         abs_tol=1e-15,
     ):
         raise RuntimeError("installed example returned an inconsistent design residual")
+    if design != oracle["design"]:
+        raise RuntimeError("installed example changed the trusted design reference")
+    independent_design = _require_keys(
+        "independent design reference",
+        independent_reference["design"],
+        {"r", "threshold"},
+    )
+    _reference_close(
+        "design r against independent quadrature",
+        r_value,
+        independent_design["r"],
+        tolerance=main_tolerance,
+    )
+    _reference_close(
+        "design threshold against independent quadrature",
+        threshold,
+        independent_design["threshold"],
+        tolerance=main_tolerance,
+    )
 
     truth = _require_keys(
         "simulation truth",
@@ -1313,6 +1755,102 @@ def _validate_example(payload: dict[str, Any]) -> None:
     ):
         raise RuntimeError("installed example changed the fixed simulation truth")
 
+    fixture = _require_keys(
+        "inference fixture",
+        payload.get("inference_fixture"),
+        {"construction", "dtype", "nbytes", "sha256"},
+    )
+    independently_computed_fixture = _independent_fixture_identity(threshold)
+    if (
+        fixture != oracle["fixture"]
+        or independently_computed_fixture != oracle["fixture"]
+    ):
+        raise RuntimeError("installed example changed the fixed inference fixture")
+
+    simulation = _require_keys(
+        "simulation evidence",
+        payload.get("simulation"),
+        {
+            "dtype",
+            "rng_algorithm",
+            "simulator_algorithm",
+            "numpy_version",
+            "scipy_version",
+            "sample_sha256",
+            "counts",
+            "minimum",
+            "maximum",
+        },
+    )
+    contract = _require_keys(
+        "simulation contract",
+        oracle["simulation_contract"],
+        {
+            "sample_size",
+            "seed",
+            "truth_rule",
+            "rng_algorithm",
+            "simulator_algorithm",
+            "canonical_dtype",
+            "approved_environments",
+        },
+    )
+    if (
+        contract["sample_size"] != 5_000
+        or contract["seed"] != payload["seed"]
+        or contract["truth_rule"] != "alpha=2-design.r*1.5,beta=0.35,loc=0,scale=1"
+        or simulation["dtype"] != contract["canonical_dtype"]
+        or simulation["rng_algorithm"] != contract["rng_algorithm"]
+        or simulation["simulator_algorithm"] != contract["simulator_algorithm"]
+    ):
+        raise RuntimeError("installed simulation changed its fixed algorithm contract")
+    numpy_version = simulation["numpy_version"]
+    scipy_version = simulation["scipy_version"]
+    if not isinstance(numpy_version, str) or not isinstance(scipy_version, str):
+        raise RuntimeError("installed simulation returned invalid runtime versions")
+    if runtime_versions is not None and (
+        runtime_versions.get("numpy") != numpy_version
+        or runtime_versions.get("scipy") != scipy_version
+    ):
+        raise RuntimeError(
+            "installed simulation runtime contradicts independent imports"
+        )
+    environment_key = f"numpy={numpy_version}|scipy={scipy_version}"
+    approved = contract["approved_environments"]
+    if not isinstance(approved, dict) or environment_key not in approved:
+        raise RuntimeError(
+            f"installed simulation environment is not approved: {environment_key}"
+        )
+    expected_simulation = approved[environment_key]
+    expected_simulation_values = _require_keys(
+        "approved simulation evidence",
+        expected_simulation,
+        {"dtype", "sample_sha256", "counts", "minimum", "maximum"},
+    )
+    simulation_counts = _require_keys(
+        "simulation cell counts",
+        simulation["counts"],
+        {"n_minus", "n_zero", "n_plus"},
+    )
+    validated_simulation_counts = {
+        name: _strict_nonnegative_int(f"simulation count {name}", value)
+        for name, value in simulation_counts.items()
+    }
+    if sum(validated_simulation_counts.values()) != contract["sample_size"]:
+        raise RuntimeError("installed simulation counts have the wrong sample size")
+    for name in ("dtype", "sample_sha256"):
+        if simulation[name] != expected_simulation_values[name]:
+            raise RuntimeError(f"installed simulation changed approved {name}")
+    if validated_simulation_counts != expected_simulation_values["counts"]:
+        raise RuntimeError("installed simulation changed approved counts")
+    for name in ("minimum", "maximum"):
+        _reference_close(
+            f"simulation {name}",
+            simulation[name],
+            expected_simulation_values[name],
+            tolerance=0.0,
+        )
+
     prior = _require_keys(
         "prior",
         payload.get("prior"),
@@ -1326,6 +1864,8 @@ def _validate_example(payload: dict[str, Any]) -> None:
     }
     if bounds != {"h_min": 0.25, "h_max": 4.0, "p_min": 0.05, "p_max": 0.95}:
         raise RuntimeError("installed example changed the fixed compact prior")
+    if prior != oracle["prior"]:
+        raise RuntimeError("installed example changed the trusted prior reference")
 
     counts = payload.get("counts")
     count_names = {"n_minus", "n_zero", "n_plus", "n", "threshold"}
@@ -1354,6 +1894,8 @@ def _validate_example(payload: dict[str, Any]) -> None:
         abs_tol=1e-15,
     ):
         raise RuntimeError("installed example returned counts for the wrong design")
+    if counts != oracle["counts"]:
+        raise RuntimeError("installed example changed the trusted count witness")
 
     quadrature = _require_keys(
         "quadrature",
@@ -1373,7 +1915,24 @@ def _validate_example(payload: dict[str, Any]) -> None:
     )
     if interval_mass != 0.9:
         raise RuntimeError("installed example changed the common credible mass")
-    _finite_float("quadrature log normalizer", quadrature["log_normalizer"])
+    log_normalizer = _reference_close(
+        "quadrature log normalizer",
+        quadrature["log_normalizer"],
+        oracle["quadrature"]["log_normalizer"],
+        tolerance=main_tolerance,
+    )
+    _reference_close(
+        "quadrature log normalizer against independent quadrature",
+        log_normalizer,
+        independent_reference["log_normalizer"],
+        tolerance=_finite_float(
+            "independent log-normalizer tolerance",
+            independent_accuracy["log_normalizer"],
+        ),
+    )
+    for name in ("base_nodes", "refined_nodes", "interval_mass"):
+        if quadrature[name] != oracle["quadrature"][name]:
+            raise RuntimeError("installed example changed trusted quadrature settings")
 
     parameters = payload.get("parameters")
     if not isinstance(parameters, dict) or set(parameters) != QUANTITIES:
@@ -1405,6 +1964,54 @@ def _validate_example(payload: dict[str, Any]) -> None:
         )
         for quantity, summary in parameters.items()
     }
+    regression_parameters = _require_keys(
+        "oracle parameter references", oracle["parameters"], QUANTITIES
+    )
+    independent_parameters = _require_keys(
+        "independent parameter references",
+        independent_reference["parameters"],
+        QUANTITIES,
+    )
+    independent_parameter_tolerances = _require_keys(
+        "independent parameter tolerances",
+        independent_accuracy["parameters"],
+        QUANTITIES,
+    )
+    for quantity, actual_summary in validated_parameters.items():
+        expected_summary = _require_keys(
+            f"oracle {quantity} reference",
+            regression_parameters[quantity],
+            {"mean", "median", "lower", "upper"},
+        )
+        independent_summary = _require_keys(
+            f"independent {quantity} reference",
+            independent_parameters[quantity],
+            {"mean", "median", "lower", "upper"},
+        )
+        accuracy_summary = _require_keys(
+            f"independent {quantity} tolerances",
+            independent_parameter_tolerances[quantity],
+            {"mean", "median", "lower", "upper"},
+        )
+        regression_tolerance = (
+            tau_tolerance if quantity in {"tau_plus", "tau_minus"} else main_tolerance
+        )
+        for component, actual_value in actual_summary.items():
+            _reference_close(
+                f"{quantity} {component}",
+                actual_value,
+                expected_summary[component],
+                tolerance=regression_tolerance,
+            )
+            _reference_close(
+                f"{quantity} {component} against independent quadrature",
+                actual_value,
+                independent_summary[component],
+                tolerance=_finite_float(
+                    f"independent {quantity} {component} tolerance",
+                    accuracy_summary[component],
+                ),
+            )
     h_summary = validated_parameters["h"]
     alpha_summary = validated_parameters["alpha"]
     for alpha_name, h_name in (
@@ -1417,7 +2024,7 @@ def _validate_example(payload: dict[str, Any]) -> None:
             alpha_summary[alpha_name],
             2.0 - r_value * h_summary[h_name],
             rel_tol=0.0,
-            abs_tol=2e-14,
+            abs_tol=algebraic_tolerance,
         ):
             raise RuntimeError("installed alpha and h summaries are inconsistent")
     p_summary = validated_parameters["p"]
@@ -1427,7 +2034,7 @@ def _validate_example(payload: dict[str, Any]) -> None:
             beta_summary[name],
             2.0 * p_summary[name] - 1.0,
             rel_tol=0.0,
-            abs_tol=2e-14,
+            abs_tol=algebraic_tolerance,
         ):
             raise RuntimeError("installed beta and p summaries are inconsistent")
     if not math.isclose(
@@ -1435,13 +2042,27 @@ def _validate_example(payload: dict[str, Any]) -> None:
         + validated_parameters["tau_minus"]["mean"],
         r_value * h_summary["mean"],
         rel_tol=0.0,
-        abs_tol=2e-14,
+        abs_tol=algebraic_tolerance,
     ):
         raise RuntimeError("installed signed-gap and h means are inconsistent")
 
-    mass = payload.get("posterior_mass")
-    if abs(_finite_float("posterior mass", mass) - 1.0) > 1e-12:
+    mass = _reference_close(
+        "posterior mass",
+        payload.get("posterior_mass"),
+        oracle["posterior_mass"],
+        tolerance=posterior_mass_tolerance,
+    )
+    if abs(mass - 1.0) > posterior_mass_tolerance:
         raise RuntimeError("installed example posterior mass is not normalized")
+    _reference_close(
+        "posterior mass against independent quadrature",
+        mass,
+        independent_reference["posterior_mass"],
+        tolerance=_finite_float(
+            "independent posterior-mass tolerance",
+            independent_accuracy["posterior_mass"],
+        ),
+    )
 
     identification = _require_keys(
         "identification",
@@ -1470,27 +2091,75 @@ def _validate_example(payload: dict[str, Any]) -> None:
         raise RuntimeError(
             "installed example returned inconsistent identification labels"
         )
+    oracle_identification = oracle["identification"]
+    if not isinstance(oracle_identification, dict) or (
+        identification["evidence_status"]
+        != oracle_identification.get("evidence_status")
+        or identification["precision_status"]
+        != oracle_identification.get("precision_status")
+    ):
+        raise RuntimeError("installed example changed trusted identification labels")
     p_kl = _finite_float("p KL divergence", identification["p_kl_divergence"])
     contraction = _finite_float(
         "p interval contraction", identification["p_interval_width_contraction"]
     )
     if p_kl < 0.0 or not 0.0 <= contraction <= 1.0:
         raise RuntimeError("installed example returned invalid identification metrics")
+    algebraic_contraction = 1.0 - (p_summary["upper"] - p_summary["lower"]) / (
+        interval_mass * (bounds["p_max"] - bounds["p_min"])
+    )
+    if not math.isclose(
+        contraction,
+        algebraic_contraction,
+        rel_tol=0.0,
+        abs_tol=algebraic_tolerance,
+    ):
+        raise RuntimeError(
+            "installed p interval contraction is inconsistent with its interval"
+        )
+    regression_identification = _require_keys(
+        "oracle identification reference",
+        oracle_identification,
+        {
+            "evidence_status",
+            "precision_status",
+            "p_kl_divergence",
+            "p_interval_width_contraction",
+        },
+    )
+    independent_identification = _require_keys(
+        "independent identification reference",
+        independent_reference["identification"],
+        {"p_kl_divergence", "p_interval_width_contraction"},
+    )
+    independent_identification_tolerances = _require_keys(
+        "independent identification tolerances",
+        independent_accuracy["identification"],
+        {"p_kl_divergence", "p_interval_width_contraction"},
+    )
+    for name, actual_value in (
+        ("p_kl_divergence", p_kl),
+        ("p_interval_width_contraction", contraction),
+    ):
+        _reference_close(
+            f"identification {name}",
+            actual_value,
+            regression_identification[name],
+            tolerance=main_tolerance,
+        )
+        _reference_close(
+            f"identification {name} against independent quadrature",
+            actual_value,
+            independent_identification[name],
+            tolerance=_finite_float(
+                f"independent identification {name} tolerance",
+                independent_identification_tolerances[name],
+            ),
+        )
 
     warnings = payload.get("warnings")
-    evidence_phrase = {
-        "prior_dominated": "prior-dominated",
-        "one_sided_evidence": "one-sided",
-        "two_sided_evidence": "two-sided",
-    }[expected_evidence]
-    if (
-        not isinstance(warnings, list)
-        or not warnings
-        or any(not isinstance(item, str) or not item.strip() for item in warnings)
-        or not any("research_uncertified" in item for item in warnings)
-        or not any(evidence_phrase in item for item in warnings)
-    ):
-        raise RuntimeError("installed example returned incomplete warnings")
+    if warnings != oracle["warnings"]:
+        raise RuntimeError("installed example changed exact warning codes or text")
 
     backend = _require_keys(
         "backend provenance",
@@ -1512,6 +2181,14 @@ def _validate_example(payload: dict[str, Any]) -> None:
         or backend["library"] != "scipy"
     ):
         raise RuntimeError("installed backend provenance is not canonical SciPy S0")
+    if backend["library_version"] != scipy_version:
+        raise RuntimeError("installed backend library version contradicts simulation")
+    if runtime_versions is not None and backend[
+        "library_version"
+    ] != runtime_versions.get("scipy"):
+        raise RuntimeError(
+            "installed backend library version contradicts independent import"
+        )
     for name in ("method", "origin", "library", "library_version"):
         if not isinstance(backend[name], str) or not backend[name].strip():
             raise RuntimeError(
@@ -1556,7 +2233,173 @@ def _validate_example(payload: dict[str, Any]) -> None:
     ):
         raise RuntimeError("installed backend settings contradict its provenance")
 
-    _validate_refinement(payload.get("refinement"))
+    _validate_refinement(
+        payload.get("refinement"),
+        expected=oracle["refinement"],
+        tolerance_config=tolerance_config,
+    )
+
+
+def _assert_science_payload_parity(
+    public_payload: dict[str, Any], independent_payload: dict[str, Any]
+) -> None:
+    if public_payload != independent_payload:
+        raise RuntimeError(
+            "public example differs from the independently executed installed estimator"
+        )
+
+
+def _summary_components(name: str, value: object) -> dict[str, float]:
+    summary = _require_keys(
+        f"{name} summary", value, {"mean", "median", "credible_interval"}
+    )
+    interval = _require_keys(
+        f"{name} credible interval",
+        summary["credible_interval"],
+        {"lower", "upper", "mass"},
+    )
+    if _finite_float(f"{name} credible mass", interval["mass"]) != 0.9:
+        raise RuntimeError(f"installed reflection changed {name} credible mass")
+    return {
+        "mean": _finite_float(f"{name} mean", summary["mean"]),
+        "median": _finite_float(f"{name} median", summary["median"]),
+        "lower": _finite_float(f"{name} lower", interval["lower"]),
+        "upper": _finite_float(f"{name} upper", interval["upper"]),
+    }
+
+
+def _validate_reflection_probe(primary: dict[str, Any], reflection: object) -> None:
+    """Require the installed estimator to respect exact S0 reflection symmetry."""
+    values = _require_keys(
+        "reflected installed estimator",
+        reflection,
+        {
+            "status",
+            "method",
+            "parameterization",
+            "counts",
+            "log_normalizer",
+            "parameters",
+            "identification",
+            "warnings",
+        },
+    )
+    if (
+        values["status"] != primary["status"]
+        or values["method"] != primary["method"]
+        or values["parameterization"] != "S0"
+    ):
+        raise RuntimeError("installed estimator changed method under reflection")
+    reflected_counts = _require_keys(
+        "reflected cell counts",
+        values["counts"],
+        {"n_minus", "n_zero", "n_plus", "n", "threshold"},
+    )
+    for name in ("n_minus", "n_zero", "n_plus", "n"):
+        _strict_nonnegative_int(f"reflected count {name}", reflected_counts[name])
+    primary_counts = primary["counts"]
+    expected_counts = {
+        "n_minus": primary_counts["n_plus"],
+        "n_zero": primary_counts["n_zero"],
+        "n_plus": primary_counts["n_minus"],
+        "n": primary_counts["n"],
+        "threshold": primary_counts["threshold"],
+    }
+    if reflected_counts != expected_counts:
+        raise RuntimeError("installed estimator returned wrong reflected cell counts")
+
+    oracle = _oracle_document()
+    _, _, tolerances = _trusted_numerical_oracle(oracle)
+    main_tolerance = _finite_float("oracle main tolerance", tolerances["main"])
+    tau_tolerance = _finite_float("oracle tau tolerance", tolerances["tau"])
+    primary_quadrature = primary["quadrature"]
+    _reference_close(
+        "reflected log normalizer",
+        values["log_normalizer"],
+        primary_quadrature["log_normalizer"],
+        tolerance=main_tolerance,
+    )
+
+    primary_parameters = _require_keys(
+        "primary parameter summaries", primary["parameters"], QUANTITIES
+    )
+    reflected_parameters = _require_keys(
+        "reflected parameter summaries", values["parameters"], QUANTITIES
+    )
+    primary_summaries = {
+        name: _summary_components(f"primary {name}", summary)
+        for name, summary in primary_parameters.items()
+    }
+    reflected_summaries = {
+        name: _summary_components(f"reflected {name}", summary)
+        for name, summary in reflected_parameters.items()
+    }
+    expected_sources = {
+        "h": ("h", 1.0, False),
+        "alpha": ("alpha", 1.0, False),
+        "p": ("p", 1.0, True),
+        "beta": ("beta", -1.0, True),
+        "tau_plus": ("tau_minus", 1.0, False),
+        "tau_minus": ("tau_plus", 1.0, False),
+    }
+    for quantity, (source_quantity, multiplier, complement) in expected_sources.items():
+        source = primary_summaries[source_quantity]
+        expected_summary = dict(source)
+        if complement:
+            if quantity == "p":
+                expected_summary = {
+                    "mean": 1.0 - source["mean"],
+                    "median": 1.0 - source["median"],
+                    "lower": 1.0 - source["upper"],
+                    "upper": 1.0 - source["lower"],
+                }
+            else:
+                expected_summary = {
+                    "mean": multiplier * source["mean"],
+                    "median": multiplier * source["median"],
+                    "lower": multiplier * source["upper"],
+                    "upper": multiplier * source["lower"],
+                }
+        comparison_tolerance = (
+            tau_tolerance if quantity in {"tau_plus", "tau_minus"} else main_tolerance
+        )
+        for component, actual_value in reflected_summaries[quantity].items():
+            _reference_close(
+                f"reflected {quantity} {component}",
+                actual_value,
+                expected_summary[component],
+                tolerance=comparison_tolerance,
+            )
+
+    primary_identification = _require_keys(
+        "primary identification",
+        primary["identification"],
+        {
+            "evidence_status",
+            "precision_status",
+            "p_kl_divergence",
+            "p_interval_width_contraction",
+        },
+    )
+    reflected_identification = _require_keys(
+        "reflected identification",
+        values["identification"],
+        set(primary_identification),
+    )
+    for name in ("evidence_status", "precision_status"):
+        if reflected_identification[name] != primary_identification[name]:
+            raise RuntimeError(
+                "installed estimator changed identification on reflection"
+            )
+    for name in ("p_kl_divergence", "p_interval_width_contraction"):
+        _reference_close(
+            f"reflected {name}",
+            reflected_identification[name],
+            primary_identification[name],
+            tolerance=main_tolerance,
+        )
+    if values["warnings"] != oracle["warnings"]:
+        raise RuntimeError("installed estimator changed warnings on reflection")
 
 
 def _exercise_archive(
@@ -1606,7 +2449,29 @@ def _exercise_archive(
         if not isinstance(decoded, dict):
             raise RuntimeError("installed example did not return a JSON object")
         payload: dict[str, Any] = decoded
-        _validate_example(payload)
+        _assert_snapshot(snapshot)
+        science_probe = _installed_science_probe(
+            python,
+            cwd=work,
+            artifact=artifact,
+        )
+        _assert_snapshot(snapshot)
+        science_values = _require_keys(
+            "independent installed science probe",
+            science_probe,
+            {"primary", "reflection"},
+        )
+        independent_payload = science_values["primary"]
+        if not isinstance(independent_payload, dict):
+            raise RuntimeError(
+                "independent installed science probe omitted its payload"
+            )
+        _assert_science_payload_parity(payload, independent_payload)
+        versions = probe.get("versions")
+        if not isinstance(versions, dict):
+            raise RuntimeError("installed provenance probe omitted runtime versions")
+        _validate_example(payload, runtime_versions=versions)
+        _validate_reflection_probe(payload, science_values["reflection"])
         _assert_snapshot(snapshot)
         print(
             json.dumps(

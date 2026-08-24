@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 import copy
 import csv
 import io
-import math
+import json
 import os
 import stat
 import subprocess
@@ -149,45 +150,38 @@ def test_venv_python_preserves_posix_launcher_symlink(tmp_path: Path) -> None:
     assert selected.resolve() != selected
 
 
-def _valid_summary(quantity: str) -> dict[str, object]:
-    r_value = 0.007771638764269451
-    values = {
-        "h": (1.0, 2.0, 3.0, 2.0),
-        "p": (0.2, 0.5, 0.8, 0.5),
-        "alpha": (
-            2.0 - 3.0 * r_value,
-            2.0 - 2.0 * r_value,
-            2.0 - r_value,
-            2.0 - 2.0 * r_value,
-        ),
-        "beta": (-0.6, 0.0, 0.6, 0.0),
-        "tau_plus": (0.1 * r_value, r_value, 1.9 * r_value, r_value),
-        "tau_minus": (0.1 * r_value, r_value, 1.9 * r_value, r_value),
-    }
-    lower, median, upper, mean = values[quantity]
-    return {
-        "mean": mean,
-        "median": median,
-        "credible_interval": {"lower": lower, "upper": upper, "mass": 0.9},
-    }
-
-
 def _valid_payload() -> dict[str, object]:
-    r_value = 0.007771638764269451
-    log_inverse_r = math.log(1.0 / r_value)
-    threshold = 2.0 * math.sqrt(log_inverse_r + 2.0 * math.log(log_inverse_r))
+    oracle = smoke_wheel._oracle_document()
+    design = copy.deepcopy(oracle["design"])
+    r_value = design["r"]
+    assert isinstance(r_value, float)
+    contract = oracle["simulation_contract"]
+    assert isinstance(contract, dict)
+    approved = contract["approved_environments"]
+    assert isinstance(approved, dict)
+    environment = approved["numpy=2.5.2|scipy=1.18.1"]
+    assert isinstance(environment, dict)
+    reference_parameters = oracle["parameters"]
+    assert isinstance(reference_parameters, dict)
+    parameters: dict[str, object] = {}
+    for quantity, reference in reference_parameters.items():
+        assert isinstance(reference, dict)
+        parameters[quantity] = {
+            "mean": reference["mean"],
+            "median": reference["median"],
+            "credible_interval": {
+                "lower": reference["lower"],
+                "upper": reference["upper"],
+                "mass": 0.9,
+            },
+        }
     return {
         "schema_version": 1,
         "package_version": "0.1.0",
         "status": "research_uncertified",
         "method": "exact_finite_three_cell",
         "parameterization": "S0",
-        "known_nuisance": {
-            "loc": 0.0,
-            "scale": 1.0,
-            "mode": "externally_known",
-            "provenance": "fixed independently",
-        },
+        "known_nuisance": copy.deepcopy(oracle["known_nuisance"]),
         "seed": 20_260_824,
         "truth": {
             "alpha": 2.0 - 1.5 * r_value,
@@ -195,72 +189,33 @@ def _valid_payload() -> dict[str, object]:
             "loc": 0.0,
             "scale": 1.0,
         },
-        "design": {
-            "n": 5_000,
-            "c": 1.0,
-            "r": r_value,
-            "threshold": threshold,
-            "formula_id": "critical-rate-lambertw-loglog-threshold",
-            "formula_version": 1,
-            "critical_rate_relative_residual": abs(
-                5_000 * r_value / log_inverse_r - 8.0
-            )
-            / 8.0,
+        "inference_fixture": copy.deepcopy(oracle["fixture"]),
+        "simulation": {
+            "dtype": environment["dtype"],
+            "rng_algorithm": contract["rng_algorithm"],
+            "simulator_algorithm": contract["simulator_algorithm"],
+            "numpy_version": "2.5.2",
+            "scipy_version": "1.18.1",
+            "sample_sha256": environment["sample_sha256"],
+            "counts": copy.deepcopy(environment["counts"]),
+            "minimum": environment["minimum"],
+            "maximum": environment["maximum"],
         },
-        "prior": {
-            "family": "compact_uniform_rectangle",
-            "h_min": 0.25,
-            "h_max": 4.0,
-            "p_min": 0.05,
-            "p_max": 0.95,
-        },
-        "counts": {
-            "n_minus": 1,
-            "n_zero": 4_996,
-            "n_plus": 3,
-            "n": 5_000,
-            "threshold": threshold,
-        },
-        "quadrature": {
-            "base_nodes": 20,
-            "refined_nodes": 32,
-            "interval_mass": 0.9,
-            "log_normalizer": -17.0,
-        },
-        "parameters": {
-            quantity: _valid_summary(quantity) for quantity in smoke_wheel.QUANTITIES
-        },
-        "posterior_mass": 1.0,
-        "refinement": {
-            "converged": True,
-            "tolerance": 0.002,
-            "joint_total_variation": 0.001,
-            "log_normalizer_change": 1e-10,
-            "common_grid_points": 65,
-            "summary_changes": {
-                quantity: {
-                    "mean": 1e-8,
-                    "median": 1e-8,
-                    "interval_lower": 1e-8,
-                    "interval_upper": 1e-8,
-                }
-                for quantity in smoke_wheel.QUANTITIES
-            },
-            "predictive_tail": {"negative": 1e-8, "positive": 1e-8},
-        },
-        "identification": {
-            "evidence_status": "two_sided_evidence",
-            "precision_status": "not_assessed",
-            "p_kl_divergence": 0.1,
-            "p_interval_width_contraction": 0.2,
-        },
+        "design": design,
+        "prior": copy.deepcopy(oracle["prior"]),
+        "counts": copy.deepcopy(oracle["counts"]),
+        "quadrature": copy.deepcopy(oracle["quadrature"]),
+        "parameters": parameters,
+        "posterior_mass": oracle["posterior_mass"],
+        "refinement": copy.deepcopy(oracle["refinement"]),
+        "identification": copy.deepcopy(oracle["identification"]),
         "backend": {
             "method": "scipy-piecewise-s0-direct-log-tails",
             "tolerance": 1.2e-14,
             "origin": "canonical_scipy_s0",
             "parameterization": "S0",
             "library": "scipy",
-            "library_version": "1.18.0",
+            "library_version": "1.18.1",
             "effective_settings": {
                 "parameterization": "S0",
                 "pdf_default_method": "piecewise",
@@ -275,10 +230,7 @@ def _valid_payload() -> dict[str, object]:
                 "pdf_fft_interpolation_degree": 3,
             },
         },
-        "warnings": [
-            "research_uncertified: not a certificate.",
-            "Signed-tail evidence is two-sided; precision is not assessed.",
-        ],
+        "warnings": copy.deepcopy(oracle["warnings"]),
     }
 
 
@@ -725,6 +677,37 @@ def test_installed_payload_requires_exact_finite_cell_method() -> None:
         smoke_wheel._validate_example(payload)
 
 
+def test_oracle_backed_payload_passes_full_scientific_validation() -> None:
+    smoke_wheel._validate_example(
+        _valid_payload(),
+        runtime_versions={"numpy": "2.5.2", "scipy": "1.18.1"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("container", "quantity", "field", "fake_value"),
+    [
+        ("quadrature", "", "log_normalizer", -17.0),
+        ("parameters", "h", "mean", 2.0),
+        ("parameters", "p", "mean", 0.5),
+    ],
+)
+def test_prior_invented_valid_payload_values_are_rejected(
+    container: str, quantity: str, field: str, fake_value: float
+) -> None:
+    """The former shape-only fixture must never authenticate numerical output."""
+    payload = _valid_payload()
+    selected = payload[container]
+    assert isinstance(selected, dict)
+    if quantity:
+        selected = selected[quantity]
+        assert isinstance(selected, dict)
+    selected[field] = fake_value
+
+    with pytest.raises(RuntimeError, match="trusted numerical reference"):
+        smoke_wheel._validate_example(payload)
+
+
 def test_installed_payload_requires_complete_schema() -> None:
     payload = _valid_payload()
     del payload["truth"]
@@ -778,6 +761,94 @@ def test_installed_payload_rejects_scientific_contract_changes(
     values[field] = bad_value
 
     with pytest.raises(RuntimeError, match=message):
+        smoke_wheel._validate_example(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [("numpy_version", "2.4.0"), ("scipy_version", "1.18.2")],
+)
+def test_installed_payload_rejects_unknown_numpy_scipy_combinations(
+    field: str, bad_value: str
+) -> None:
+    payload = _valid_payload()
+    simulation = payload["simulation"]
+    assert isinstance(simulation, dict)
+    simulation[field] = bad_value
+
+    with pytest.raises(RuntimeError, match="environment is not approved"):
+        smoke_wheel._validate_example(payload)
+
+
+def test_installed_payload_rejects_three_point_fake_simulator() -> None:
+    payload = _valid_payload()
+    simulation = payload["simulation"]
+    assert isinstance(simulation, dict)
+    simulation["sample_sha256"] = sha256(
+        b"three hand-selected floating-point observations"
+    ).hexdigest()
+    simulation["counts"] = {"n_minus": 1, "n_zero": 1, "n_plus": 1}
+
+    with pytest.raises(RuntimeError, match="wrong sample size"):
+        smoke_wheel._validate_example(payload)
+
+
+def test_installed_payload_rejects_non_stable_simulator_algorithm() -> None:
+    payload = _valid_payload()
+    simulation = payload["simulation"]
+    assert isinstance(simulation, dict)
+    simulation["simulator_algorithm"] = "hand-coded-three-point-generator"
+
+    with pytest.raises(RuntimeError, match="algorithm contract"):
+        smoke_wheel._validate_example(payload)
+
+
+def test_installed_payload_rejects_stale_independently_imported_versions() -> None:
+    with pytest.raises(RuntimeError, match="contradicts independent imports"):
+        smoke_wheel._validate_example(
+            _valid_payload(),
+            runtime_versions={"numpy": "2.5.2", "scipy": "1.18.0"},
+        )
+
+
+def test_installed_payload_rejects_stale_backend_library_version() -> None:
+    payload = _valid_payload()
+    backend = payload["backend"]
+    assert isinstance(backend, dict)
+    backend["library_version"] = "1.18.0"
+
+    with pytest.raises(RuntimeError, match="contradicts simulation"):
+        smoke_wheel._validate_example(payload)
+
+
+def test_fixture_identity_is_reconstructed_outside_the_example(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _valid_payload()
+    fixture = payload["inference_fixture"]
+    assert isinstance(fixture, dict)
+    fixture["sha256"] = "0" * 64
+    poisoned_oracle = copy.deepcopy(smoke_wheel._oracle_document())
+    oracle_fixture = poisoned_oracle["fixture"]
+    assert isinstance(oracle_fixture, dict)
+    oracle_fixture["sha256"] = "0" * 64
+    monkeypatch.setattr(smoke_wheel, "_oracle_document", lambda: poisoned_oracle)
+
+    with pytest.raises(RuntimeError, match="fixed inference fixture"):
+        smoke_wheel._validate_example(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [("provenance", "fixed cell-count witness"), ("mode", "same_sample_plugin")],
+)
+def test_nuisance_provenance_requires_exact_values(field: str, bad_value: str) -> None:
+    payload = _valid_payload()
+    nuisance = payload["known_nuisance"]
+    assert isinstance(nuisance, dict)
+    nuisance[field] = bad_value
+
+    with pytest.raises(RuntimeError, match="exact nuisance provenance"):
         smoke_wheel._validate_example(payload)
 
 
@@ -852,7 +923,7 @@ def test_installed_payload_rejects_unordered_interval() -> None:
     assert isinstance(summary, dict)
     interval = summary["credible_interval"]
     assert isinstance(interval, dict)
-    interval["lower"] = 0.6
+    interval["lower"] = 0.8
 
     with pytest.raises(RuntimeError, match="unordered p"):
         smoke_wheel._validate_example(payload)
@@ -883,6 +954,62 @@ def test_installed_payload_rejects_prior_support_violation_that_is_globally_vali
     summary["mean"] = 0.99
 
     with pytest.raises(RuntimeError, match="outside its prior support"):
+        smoke_wheel._validate_example(payload)
+
+
+NUMERICAL_ORACLE_PATHS = [
+    ("quadrature", "log_normalizer"),
+    ("posterior_mass",),
+    ("identification", "p_kl_divergence"),
+    ("identification", "p_interval_width_contraction"),
+    *[
+        ("parameters", quantity, component)
+        for quantity in smoke_wheel.QUANTITIES
+        for component in ("mean", "median")
+    ],
+    *[
+        ("parameters", quantity, "credible_interval", endpoint)
+        for quantity in smoke_wheel.QUANTITIES
+        for endpoint in ("lower", "upper")
+    ],
+]
+
+
+@pytest.mark.parametrize("path", NUMERICAL_ORACLE_PATHS)
+def test_every_posterior_quantity_is_bound_to_the_numerical_oracle(
+    path: tuple[str, ...],
+) -> None:
+    payload = _valid_payload()
+    selected: dict[str, object] = payload
+    for name in path[:-1]:
+        nested = selected[name]
+        assert isinstance(nested, dict)
+        selected = nested
+    value = selected[path[-1]]
+    assert isinstance(value, float)
+    selected[path[-1]] = value + (1e-6 if "tau_" in ".".join(path) else 1e-4)
+
+    with pytest.raises(
+        RuntimeError,
+        match="trusted numerical reference|inconsistent with its interval",
+    ):
+        smoke_wheel._validate_example(payload)
+
+
+def test_reported_contraction_is_derived_from_the_reported_p_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _valid_payload()
+    identification = payload["identification"]
+    assert isinstance(identification, dict)
+    identification["p_interval_width_contraction"] = 0.3
+    poisoned_oracle = copy.deepcopy(smoke_wheel._oracle_document())
+    oracle_identification = poisoned_oracle["identification"]
+    assert isinstance(oracle_identification, dict)
+    oracle_identification["p_interval_width_contraction"] = 0.3
+    monkeypatch.setattr(smoke_wheel, "_oracle_document", lambda: poisoned_oracle)
+
+    with pytest.raises(RuntimeError, match="inconsistent with its interval"):
         smoke_wheel._validate_example(payload)
 
 
@@ -926,6 +1053,37 @@ def test_installed_payload_rejects_every_refinement_component_above_tolerance(
         smoke_wheel._validate_example(payload)
 
 
+NONZERO_REFINEMENT_PATHS = [
+    ("joint_total_variation",),
+    ("log_normalizer_change",),
+    *[
+        ("summary_changes", quantity, component)
+        for quantity in smoke_wheel.QUANTITIES
+        for component in ("mean", "median", "interval_lower", "interval_upper")
+    ],
+    ("predictive_tail", "negative"),
+    ("predictive_tail", "positive"),
+]
+
+
+@pytest.mark.parametrize("path", NONZERO_REFINEMENT_PATHS)
+def test_every_nonzero_refinement_component_is_reference_bound(
+    path: tuple[str, ...],
+) -> None:
+    payload = _valid_payload()
+    refinement = payload["refinement"]
+    assert isinstance(refinement, dict)
+    selected = refinement
+    for name in path[:-1]:
+        nested = selected[name]
+        assert isinstance(nested, dict)
+        selected = nested
+    selected[path[-1]] = 0.0
+
+    with pytest.raises(RuntimeError, match="lost nonzero refinement evidence"):
+        smoke_wheel._validate_example(payload)
+
+
 def test_installed_payload_requires_exact_common_grid() -> None:
     payload = _valid_payload()
     refinement = payload["refinement"]
@@ -950,8 +1108,112 @@ def test_installed_payload_rejects_warning_contradiction() -> None:
     payload = _valid_payload()
     payload["warnings"] = ["research_uncertified: not a certificate."]
 
-    with pytest.raises(RuntimeError, match="incomplete warnings"):
+    with pytest.raises(RuntimeError, match="exact warning"):
         smoke_wheel._validate_example(payload)
+
+
+def test_warning_substrings_cannot_hide_a_contradictory_claim() -> None:
+    payload = _valid_payload()
+    warnings = payload["warnings"]
+    assert isinstance(warnings, list)
+    warnings[0] = f"{warnings[0]} This result is certified."
+
+    with pytest.raises(RuntimeError, match="exact warning"):
+        smoke_wheel._validate_example(payload)
+
+
+def test_independent_accuracy_reference_rejects_matching_regression_poison(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _valid_payload()
+    parameters = payload["parameters"]
+    assert isinstance(parameters, dict)
+    h_summary = parameters["h"]
+    assert isinstance(h_summary, dict)
+    h_summary["median"] = 2.4
+    poisoned_oracle = copy.deepcopy(smoke_wheel._oracle_document())
+    oracle_parameters = poisoned_oracle["parameters"]
+    assert isinstance(oracle_parameters, dict)
+    oracle_h = oracle_parameters["h"]
+    assert isinstance(oracle_h, dict)
+    oracle_h["median"] = 2.4
+    monkeypatch.setattr(smoke_wheel, "_oracle_document", lambda: poisoned_oracle)
+
+    with pytest.raises(RuntimeError, match="against independent quadrature"):
+        smoke_wheel._validate_example(payload)
+
+
+def test_public_example_must_match_independent_installed_estimator() -> None:
+    independent = _valid_payload()
+    hardcoded = copy.deepcopy(independent)
+    parameters = hardcoded["parameters"]
+    assert isinstance(parameters, dict)
+    h_summary = parameters["h"]
+    assert isinstance(h_summary, dict)
+    h_summary["mean"] = 2.0
+
+    with pytest.raises(
+        RuntimeError, match="independently executed installed estimator"
+    ):
+        smoke_wheel._assert_science_payload_parity(hardcoded, independent)
+
+
+def test_installed_estimator_cannot_hardcode_the_primary_posterior() -> None:
+    primary = _valid_payload()
+    counts = primary["counts"]
+    assert isinstance(counts, dict)
+    quadrature = primary["quadrature"]
+    assert isinstance(quadrature, dict)
+    reflection = {
+        "status": primary["status"],
+        "method": primary["method"],
+        "parameterization": primary["parameterization"],
+        "counts": {
+            "n_minus": counts["n_plus"],
+            "n_zero": counts["n_zero"],
+            "n_plus": counts["n_minus"],
+            "n": counts["n"],
+            "threshold": counts["threshold"],
+        },
+        "log_normalizer": quadrature["log_normalizer"],
+        "parameters": copy.deepcopy(primary["parameters"]),
+        "identification": copy.deepcopy(primary["identification"]),
+        "warnings": copy.deepcopy(primary["warnings"]),
+    }
+
+    with pytest.raises(RuntimeError, match="reflected p"):
+        smoke_wheel._validate_reflection_probe(primary, reflection)
+
+
+def test_independent_oracle_generator_never_imports_stableboundary() -> None:
+    generator = smoke_wheel.REPOSITORY / "scripts" / "generate_artifact_oracle.py"
+    source = generator.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imported_modules = {
+        alias.name.split(".", maxsplit=1)[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    imported_modules.update(
+        node.module.split(".", maxsplit=1)[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    )
+
+    assert "stableboundary" not in imported_modules
+
+
+def test_oracle_approves_only_measured_numpy_scipy_combinations() -> None:
+    document = json.loads(smoke_wheel.ORACLE.read_text(encoding="utf-8"))
+    approved = document["simulation_contract"]["approved_environments"]
+
+    assert set(approved) == {
+        "numpy=2.2.0|scipy=1.18.0",
+        "numpy=2.2.0|scipy=1.18.1",
+        "numpy=2.5.2|scipy=1.18.0",
+        "numpy=2.5.2|scipy=1.18.1",
+    }
 
 
 @pytest.mark.parametrize(
