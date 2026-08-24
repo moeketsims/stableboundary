@@ -1685,7 +1685,7 @@ def test_installed_payload_rejects_backend_setting_contradictions(
         smoke_wheel._validate_example(payload)
 
 
-def test_artifact_install_separates_dependencies_and_uses_no_deps(
+def test_environment_preparation_finishes_before_artifact_consumption(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[list[str]] = []
@@ -1696,31 +1696,19 @@ def test_artifact_install_separates_dependencies_and_uses_no_deps(
         return ""
 
     monkeypatch.setattr(smoke_wheel, "_run", record)
-    artifact = tmp_path / smoke_wheel.EXPECTED_WHEEL
-    artifact.touch()
 
-    smoke_wheel._install_archive(Path("python"), artifact, cwd=tmp_path)
+    smoke_wheel._prepare_environment(Path("python"), cwd=tmp_path)
 
-    assert len(calls) == 4
+    assert len(calls) == 2
+    assert "build>=1.5,<2" in calls[0]
+    assert "hatchling==1.32.0" in calls[0]
     assert "numpy>=2.2" in calls[0]
     assert "scipy>=1.18,<1.19" in calls[0]
     assert not any("stableboundary" in argument for argument in calls[0])
     assert "--isolated" in calls[0]
     assert "--no-input" in calls[0]
     assert "--no-compile" in calls[0]
-    assert "find_spec('stableboundary') is None" in calls[1][-1]
-    assert "--no-deps" in calls[2]
-    assert "--isolated" in calls[2]
-    assert "--no-input" in calls[2]
-    assert "--no-compile" in calls[2]
-    assert calls[2][-1] == str(artifact)
-    assert calls[3][-5:] == [
-        "pip",
-        "--isolated",
-        "--no-input",
-        "check",
-        "--disable-pip-version-check",
-    ]
+    assert "check" in calls[1]
 
 
 def test_stage_subprocess_uses_allowlisted_environment(
@@ -1756,169 +1744,270 @@ def test_stage_subprocess_uses_allowlisted_environment(
     assert observed["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
-def test_artifact_install_fails_closed_when_pip_check_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def fail_check(command: list[str], **kwargs: object) -> str:
-        del kwargs
-        if "check" in command:
-            raise RuntimeError("dependency graph is inconsistent")
-        return ""
+def _test_site_packages(environment: Path) -> Path:
+    if os.name == "nt":
+        return environment / "Lib" / "site-packages"
+    version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    return environment / "lib" / version / "site-packages"
 
-    monkeypatch.setattr(smoke_wheel, "_run", fail_check)
+
+def _test_archive_inspection() -> smoke_wheel.ArchiveInspection:
+    wheel_files = _wheel_members()
+    wheel_files[f"{smoke_wheel.DIST_INFO}/RECORD"] = _record_bytes(wheel_files)
+    package = smoke_wheel._repository_package_payload()
+    return smoke_wheel.ArchiveInspection(
+        package_files={
+            name: smoke_wheel._file_identity(content)
+            for name, content in package.items()
+        },
+        wheel_files=wheel_files,
+        sdist_files={},
+        wheel_sha256="0" * 64,
+        sdist_sha256="1" * 64,
+    )
+
+
+def _materialize_raw_install(
+    tmp_path: Path,
+) -> tuple[
+    Path,
+    Path,
+    Path,
+    str,
+    smoke_wheel.ArchiveInspection,
+    smoke_wheel.TreeInventory,
+]:
+    environment = tmp_path / "venv"
+    site_packages = _test_site_packages(environment)
+    site_packages.mkdir(parents=True)
+    scripts = environment / ("Scripts" if os.name == "nt" else "bin")
+    scripts.mkdir()
+    before = smoke_wheel._tree_inventory(environment)
     artifact = tmp_path / smoke_wheel.EXPECTED_WHEEL
-    artifact.touch()
-
-    with pytest.raises(RuntimeError, match="dependency graph"):
-        smoke_wheel._install_archive(Path("python"), artifact, cwd=tmp_path)
-
-
-def _valid_distribution_probe(artifact: Path, origin: Path) -> dict[str, object]:
+    artifact.write_bytes(b"inspected wheel bytes")
     digest = sha256(artifact.read_bytes()).hexdigest()
-    source_digest = sha256(origin.read_bytes()).hexdigest()
-    return {
-        "import_origin": str(origin),
-        "metadata_version": smoke_wheel.PROJECT_VERSION,
-        "package_version": smoke_wheel.PROJECT_VERSION,
-        "versions": {
-            "python": "3.14.7",
-            "platform_system": "Windows",
-            "platform_machine": "AMD64",
-            "numpy": "2.5.2",
-            "scipy": "1.18.1",
-            "stableboundary": smoke_wheel.PROJECT_VERSION,
-        },
-        "package_files": {
-            "__init__.py": {"size": origin.stat().st_size, "sha256": source_digest}
-        },
-        "direct_url": {
-            "url": artifact.resolve().as_uri(),
+    inspection = _test_archive_inspection()
+    installed = {
+        name: content
+        for name, content in inspection.wheel_files.items()
+        if name != f"{smoke_wheel.DIST_INFO}/RECORD"
+    }
+    installed[f"{smoke_wheel.DIST_INFO}/INSTALLER"] = b"pip\n"
+    installed[f"{smoke_wheel.DIST_INFO}/REQUESTED"] = b""
+    installed[f"{smoke_wheel.DIST_INFO}/direct_url.json"] = json.dumps(
+        {
             "archive_info": {
                 "hash": f"sha256={digest}",
                 "hashes": {"sha256": digest},
             },
+            "url": artifact.resolve().as_uri(),
         },
-    }
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    installed[f"{smoke_wheel.DIST_INFO}/RECORD"] = _record_bytes(installed)
+    for name, content in installed.items():
+        path = site_packages.joinpath(*Path(name).parts)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    return environment, site_packages, artifact, digest, inspection, before
 
 
-def _test_package_manifest(origin: Path) -> dict[str, smoke_wheel.FileIdentity]:
-    content = origin.read_bytes()
-    return {"__init__.py": smoke_wheel._file_identity(content)}
-
-
-def test_installed_distribution_requires_exact_artifact_provenance(
+def test_raw_installed_distribution_is_authenticated_before_import(
     tmp_path: Path,
 ) -> None:
-    environment = tmp_path / "venv"
-    origin = environment / "site-packages" / "stableboundary" / "__init__.py"
-    origin.parent.mkdir(parents=True)
-    origin.touch()
-    artifact = tmp_path / smoke_wheel.EXPECTED_WHEEL
-    artifact.write_bytes(b"artifact")
-
-    selected = smoke_wheel._validate_installed_distribution(
-        _valid_distribution_probe(artifact, origin),
-        artifact=artifact,
-        environment=environment,
-        expected_digest=sha256(artifact.read_bytes()).hexdigest(),
-        package_files=_test_package_manifest(origin),
+    environment, _, artifact, digest, inspection, before = _materialize_raw_install(
+        tmp_path
     )
 
-    assert selected == origin.resolve()
+    installed = smoke_wheel._validate_installed_distribution(
+        artifact=artifact,
+        environment=environment,
+        expected_digest=digest,
+        inspection=inspection,
+        before=before,
+    )
+
+    assert installed.import_origin.name == "__init__.py"
+    assert installed.site_packages == _test_site_packages(environment).resolve()
 
 
-def test_installed_distribution_decodes_artifact_url_exactly_once(
+def test_hostile_package_code_cannot_execute_before_raw_validation(
     tmp_path: Path,
 ) -> None:
-    environment = tmp_path / "venv"
-    origin = environment / "site-packages" / "stableboundary" / "__init__.py"
-    origin.parent.mkdir(parents=True)
-    origin.touch()
-    artifact_directory = tmp_path / "literal%20directory"
-    artifact_directory.mkdir()
-    artifact = artifact_directory / smoke_wheel.EXPECTED_WHEEL
-    artifact.write_bytes(b"artifact")
-
-    selected = smoke_wheel._validate_installed_distribution(
-        _valid_distribution_probe(artifact, origin),
-        artifact=artifact,
-        environment=environment,
-        expected_digest=sha256(artifact.read_bytes()).hexdigest(),
-        package_files=_test_package_manifest(origin),
+    environment, site, artifact, digest, inspection, before = _materialize_raw_install(
+        tmp_path
+    )
+    marker = tmp_path / "import-executed.txt"
+    (site / "stableboundary" / "__init__.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n",
+        encoding="utf-8",
     )
 
-    assert selected == origin.resolve()
-
-
-@pytest.mark.parametrize("mutation", ["version", "url", "hash"])
-def test_installed_distribution_rejects_substituted_artifact(
-    tmp_path: Path, mutation: str
-) -> None:
-    environment = tmp_path / "venv"
-    origin = environment / "site-packages" / "stableboundary" / "__init__.py"
-    origin.parent.mkdir(parents=True)
-    origin.touch()
-    artifact = tmp_path / smoke_wheel.EXPECTED_WHEEL
-    artifact.write_bytes(b"artifact")
-    probe = _valid_distribution_probe(artifact, origin)
-    if mutation == "version":
-        probe["metadata_version"] = "0.2.0"
-    else:
-        direct_url = probe["direct_url"]
-        assert isinstance(direct_url, dict)
-        if mutation == "url":
-            substitute = tmp_path / "substitute.whl"
-            substitute.touch()
-            direct_url["url"] = substitute.as_uri()
-        else:
-            archive_info = direct_url["archive_info"]
-            assert isinstance(archive_info, dict)
-            archive_info["hashes"] = {"sha256": "0" * 64}
-
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="differs from inspected wheel"):
         smoke_wheel._validate_installed_distribution(
-            probe,
             artifact=artifact,
             environment=environment,
-            expected_digest=sha256(artifact.read_bytes()).hexdigest(),
-            package_files=_test_package_manifest(origin),
+            expected_digest=digest,
+            inspection=inspection,
+            before=before,
         )
+
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize(
-    ("container", "field", "bad_value"),
+    ("location", "name"),
     [
-        ("versions", "stableboundary", "0.0.0"),
-        ("versions", "python", "3.11.9"),
-        ("versions", "scipy", "1.19.0"),
-        ("package_files", "__init__.py", {"size": 0, "sha256": "0" * 64}),
+        ("site", "hostile.pth"),
+        ("site", "sitecustomize.py"),
+        ("site", "extra_module.py"),
+        ("site", "extra_native.pyd" if os.name == "nt" else "extra_native.so"),
+        ("scripts", "stableboundary-hostile"),
+        ("site", f"{smoke_wheel.DIST_INFO}/extra-metadata.json"),
     ],
 )
-def test_installed_distribution_rejects_stale_runtime_or_source(
-    tmp_path: Path,
-    container: str,
-    field: str,
-    bad_value: object,
+def test_raw_inventory_rejects_every_extra_import_or_execution_surface(
+    tmp_path: Path, location: str, name: str
 ) -> None:
-    environment = tmp_path / "venv"
-    origin = environment / "site-packages" / "stableboundary" / "__init__.py"
-    origin.parent.mkdir(parents=True)
-    origin.write_text("trusted = True\n", encoding="utf-8")
-    artifact = tmp_path / smoke_wheel.EXPECTED_WHEEL
-    artifact.write_bytes(b"artifact")
-    probe = _valid_distribution_probe(artifact, origin)
-    selected = probe[container]
-    assert isinstance(selected, dict)
-    selected[field] = bad_value
+    environment, site, artifact, digest, inspection, before = _materialize_raw_install(
+        tmp_path
+    )
+    root = (
+        site
+        if location == "site"
+        else environment / ("Scripts" if os.name == "nt" else "bin")
+    )
+    extra = root.joinpath(*Path(name).parts)
+    extra.parent.mkdir(parents=True, exist_ok=True)
+    extra.write_bytes(b"hostile")
+
+    with pytest.raises(RuntimeError, match="exact distribution manifest"):
+        smoke_wheel._validate_installed_distribution(
+            artifact=artifact,
+            environment=environment,
+            expected_digest=digest,
+            inspection=inspection,
+            before=before,
+        )
+
+
+@pytest.mark.parametrize("name", ["METADATA", "RECORD"])
+def test_raw_inventory_rejects_altered_dist_info(tmp_path: Path, name: str) -> None:
+    environment, site, artifact, digest, inspection, before = _materialize_raw_install(
+        tmp_path
+    )
+    (site / smoke_wheel.DIST_INFO / name).write_bytes(b"substituted")
 
     with pytest.raises(RuntimeError):
         smoke_wheel._validate_installed_distribution(
-            probe,
             artifact=artifact,
             environment=environment,
-            expected_digest=sha256(artifact.read_bytes()).hexdigest(),
-            package_files=_test_package_manifest(origin),
+            expected_digest=digest,
+            inspection=inspection,
+            before=before,
         )
+
+
+def test_verified_install_hash_pins_consumption_and_detects_mid_call_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / smoke_wheel.EXPECTED_WHEEL
+    source.write_bytes(b"trusted wheel")
+    digest = sha256(source.read_bytes()).hexdigest()
+    observed: list[str] = []
+    selected_path: list[Path] = []
+
+    def mutate(command: list[str], **kwargs: object) -> str:
+        del kwargs
+        observed.extend(command)
+        snapshot_path = selected_path[0]
+        snapshot_path.chmod(stat.S_IREAD | stat.S_IWRITE)
+        snapshot_path.write_bytes(b"replacement wheel")
+        return ""
+
+    monkeypatch.setattr(smoke_wheel, "_run", mutate)
+
+    with pytest.raises(RuntimeError, match="snapshot"):
+        with smoke_wheel._artifact_snapshot(source, expected_digest=digest) as snapshot:
+            selected_path.append(snapshot.path)
+            smoke_wheel._install_verified_wheel(Path("python"), snapshot, cwd=tmp_path)
+
+    assert f"#sha256={digest}" in observed[-1]
+
+
+def test_install_boundary_rejects_an_sdist_even_when_authenticated(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / smoke_wheel.EXPECTED_SDIST
+    path.write_bytes(b"trusted sdist")
+    snapshot = smoke_wheel.ArtifactSnapshot(
+        source_name=path.name,
+        path=path,
+        size=path.stat().st_size,
+        sha256=sha256(path.read_bytes()).hexdigest(),
+    )
+
+    with pytest.raises(RuntimeError, match="only the inspected wheel"):
+        smoke_wheel._install_verified_wheel(Path("python"), snapshot, cwd=tmp_path)
+
+
+def test_sdist_is_materialized_built_and_its_exact_wheel_is_inspected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdist = tmp_path / smoke_wheel.EXPECTED_SDIST
+    sdist.write_bytes(b"inspected sdist")
+    sdist_digest = sha256(sdist.read_bytes()).hexdigest()
+    snapshot = smoke_wheel.ArtifactSnapshot(
+        source_name=sdist.name,
+        path=sdist,
+        size=sdist.stat().st_size,
+        sha256=sdist_digest,
+    )
+    base = _test_archive_inspection()
+    inspection = smoke_wheel.ArchiveInspection(
+        package_files=base.package_files,
+        wheel_files=base.wheel_files,
+        sdist_files={
+            f"{smoke_wheel.EXPECTED_SDIST_ROOT}/pyproject.toml": b"[build-system]\n"
+        },
+        wheel_sha256=base.wheel_sha256,
+        sdist_sha256=sdist_digest,
+    )
+    build_commands: list[list[str]] = []
+    inspected: list[tuple[Path, Path]] = []
+
+    def build(command: list[str], **kwargs: object) -> str:
+        del kwargs
+        build_commands.append(command)
+        output = Path(command[command.index("--outdir") + 1])
+        (output / smoke_wheel.EXPECTED_WHEEL).write_bytes(b"derived wheel")
+        return ""
+
+    def inspect(wheel: Path, source: Path) -> smoke_wheel.ArchiveInspection:
+        inspected.append((wheel, source))
+        return smoke_wheel.ArchiveInspection(
+            package_files=base.package_files,
+            wheel_files=base.wheel_files,
+            sdist_files=inspection.sdist_files,
+            wheel_sha256=sha256(wheel.read_bytes()).hexdigest(),
+            sdist_sha256=sdist_digest,
+        )
+
+    monkeypatch.setattr(smoke_wheel, "_run", build)
+    monkeypatch.setattr(smoke_wheel, "_inspect_archives", inspect)
+    work = tmp_path / "work"
+    work.mkdir()
+
+    wheel, verified = smoke_wheel._build_inspected_sdist_wheel(
+        Path("python"), snapshot, inspection, cwd=work
+    )
+
+    assert "--no-isolation" in build_commands[0]
+    assert str(sdist) not in build_commands[0]
+    assert build_commands[0][-1].endswith(smoke_wheel.EXPECTED_SDIST_ROOT)
+    assert inspected == [(wheel, sdist)]
+    assert verified.wheel_sha256 == sha256(b"derived wheel").hexdigest()
 
 
 def test_artifact_snapshot_isolated_from_original_path_replacement(

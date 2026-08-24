@@ -122,6 +122,8 @@ class ArchiveInspection:
     """Source identities retained after exact archive inspection."""
 
     package_files: dict[str, FileIdentity]
+    wheel_files: dict[str, bytes]
+    sdist_files: dict[str, bytes]
     wheel_sha256: str
     sdist_sha256: str
 
@@ -134,6 +136,31 @@ class ArtifactSnapshot:
     path: Path
     size: int
     sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class TreeEntryIdentity:
+    """Type and byte identity for one entry in a private environment."""
+
+    kind: str
+    size: int
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class TreeInventory:
+    """Complete non-following inventory for a virtual environment."""
+
+    entries: dict[str, TreeEntryIdentity]
+    directories: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class InstalledDistribution:
+    """Raw-path proof completed before any installed package import."""
+
+    site_packages: Path
+    import_origin: Path
 
 
 def _archives() -> tuple[Path, Path]:
@@ -168,13 +195,17 @@ def _once_read_artifact(source: Path, destination: Path) -> ArtifactSnapshot:
         content = stream.read(MAX_ARCHIVE_BYTES + 1)
     if len(content) > MAX_ARCHIVE_BYTES:
         raise RuntimeError(f"artifact is unreasonably large: {source.name}")
-    destination.write_bytes(content)
-    destination.chmod(stat.S_IREAD)
+    digest = hashlib.sha256(content).hexdigest()
+    addressed_directory = destination.parent / digest
+    addressed_directory.mkdir(mode=0o700)
+    addressed_destination = addressed_directory / destination.name
+    addressed_destination.write_bytes(content)
+    addressed_destination.chmod(stat.S_IREAD)
     return ArtifactSnapshot(
         source_name=source.name,
-        path=destination,
+        path=addressed_destination,
         size=len(content),
-        sha256=hashlib.sha256(content).hexdigest(),
+        sha256=digest,
     )
 
 
@@ -210,6 +241,27 @@ def _artifact_snapshots(
         _assert_snapshot(wheel_snapshot)
         _assert_snapshot(sdist_snapshot)
         yield wheel_snapshot, sdist_snapshot
+
+
+@contextmanager
+def _artifact_snapshot(
+    source: Path, *, expected_digest: str
+) -> Iterator[ArtifactSnapshot]:
+    """Yield one final-boundary, content-addressed authenticated copy."""
+    with tempfile.TemporaryDirectory(prefix="stableboundary-artifact-") as temporary:
+        root = Path(temporary).resolve()
+        if root.is_relative_to(REPOSITORY.resolve()):
+            raise RuntimeError("artifact snapshot directory is inside the repository")
+        snapshot = _once_read_artifact(source, root / source.name)
+        if snapshot.sha256 != expected_digest:
+            raise RuntimeError(
+                f"artifact source changed after inspection: {source.name}"
+            )
+        _assert_snapshot(snapshot)
+        try:
+            yield snapshot
+        finally:
+            _assert_snapshot(snapshot)
 
 
 def _validated_archive_path(artifact: Path, name: str, *, subject: str) -> str:
@@ -771,6 +823,8 @@ def _inspect_archives(wheel: Path, sdist: Path) -> ArchiveInspection:
             name: _file_identity(content)
             for name, content in repository_payload.items()
         },
+        wheel_files=wheel_members,
+        sdist_files=sdist_members,
         wheel_sha256=hashlib.sha256(wheel.read_bytes()).hexdigest(),
         sdist_sha256=hashlib.sha256(sdist.read_bytes()).hexdigest(),
     )
@@ -843,8 +897,8 @@ def _run(
     return completed.stdout if capture else ""
 
 
-def _install_archive(python: Path, artifact: Path, *, cwd: Path) -> None:
-    """Install runtime dependencies first, then only the selected local artifact."""
+def _prepare_environment(python: Path, *, cwd: Path) -> None:
+    """Install dependencies and the pinned build backend before proof begins."""
     _run(
         [
             str(python),
@@ -856,42 +910,13 @@ def _install_archive(python: Path, artifact: Path, *, cwd: Path) -> None:
             "--disable-pip-version-check",
             "--no-compile",
             "--only-binary=:all:",
+            "build>=1.5,<2",
+            "hatchling==1.32.0",
             "numpy>=2.2",
             "scipy>=1.18,<1.19",
         ],
         cwd=cwd,
-        stage=f"runtime dependency installation for {artifact.name}",
-        timeout_seconds=INSTALL_TIMEOUT_SECONDS,
-    )
-    _run(
-        [
-            str(python),
-            "-I",
-            "-c",
-            (
-                "import importlib.util; "
-                "assert importlib.util.find_spec('stableboundary') is None"
-            ),
-        ],
-        cwd=cwd,
-        stage=f"pre-install substitution check for {artifact.name}",
-        timeout_seconds=IMPORT_TIMEOUT_SECONDS,
-    )
-    _run(
-        [
-            str(python),
-            "-m",
-            "pip",
-            "--isolated",
-            "--no-input",
-            "install",
-            "--disable-pip-version-check",
-            "--no-compile",
-            "--no-deps",
-            str(artifact),
-        ],
-        cwd=cwd,
-        stage=f"installation of {artifact.name}",
+        stage="runtime and build dependency installation",
         timeout_seconds=INSTALL_TIMEOUT_SECONDS,
     )
     _run(
@@ -905,97 +930,227 @@ def _install_archive(python: Path, artifact: Path, *, cwd: Path) -> None:
             "--disable-pip-version-check",
         ],
         cwd=cwd,
-        stage=f"dependency consistency check for {artifact.name}",
+        stage="dependency consistency check before artifact proof",
         timeout_seconds=IMPORT_TIMEOUT_SECONDS,
     )
 
 
-def _validate_installed_distribution(
-    probe: object,
-    *,
-    artifact: Path,
-    environment: Path,
-    expected_digest: str,
-    package_files: dict[str, FileIdentity],
+def _install_verified_wheel(
+    python: Path, snapshot: ArtifactSnapshot, *, cwd: Path
+) -> None:
+    """Consume one inspected wheel with no intervening child process."""
+    if snapshot.source_name != EXPECTED_WHEEL or snapshot.path.suffix != ".whl":
+        raise RuntimeError("only the inspected wheel may cross the install boundary")
+    _assert_snapshot(snapshot)
+    authenticated_url = f"{snapshot.path.resolve().as_uri()}#sha256={snapshot.sha256}"
+    _run(
+        [
+            str(python),
+            "-m",
+            "pip",
+            "--isolated",
+            "--no-input",
+            "install",
+            "--disable-pip-version-check",
+            "--no-compile",
+            "--no-deps",
+            authenticated_url,
+        ],
+        cwd=cwd,
+        stage=f"installation of {snapshot.source_name}",
+        timeout_seconds=INSTALL_TIMEOUT_SECONDS,
+    )
+    _assert_snapshot(snapshot)
+
+
+def _extract_inspected_sdist(
+    inspection: ArchiveInspection, destination: Path, *, artifact: Path
 ) -> Path:
-    values = _require_keys(
-        "installed distribution probe",
-        probe,
-        {
-            "import_origin",
-            "metadata_version",
-            "package_version",
-            "versions",
-            "package_files",
-            "direct_url",
-        },
+    """Materialize only the already-inspected, repository-bound sdist bytes."""
+    destination.mkdir()
+    expected_prefix = f"{EXPECTED_SDIST_ROOT}/"
+    for name, content in inspection.sdist_files.items():
+        canonical = _validated_archive_path(
+            artifact, name, subject="sdist build member"
+        )
+        if not canonical.startswith(expected_prefix):
+            raise RuntimeError("inspected sdist member escaped its source root")
+        relative = PurePosixPath(canonical)
+        target = destination.joinpath(*relative.parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+    source_root = destination / EXPECTED_SDIST_ROOT
+    if not source_root.is_dir():
+        raise RuntimeError("inspected sdist did not materialize its source root")
+    return source_root
+
+
+def _build_inspected_sdist_wheel(
+    python: Path,
+    snapshot: ArtifactSnapshot,
+    inspection: ArchiveInspection,
+    *,
+    cwd: Path,
+) -> tuple[Path, ArchiveInspection]:
+    """Build an inspected sdist tree, then inspect the exact resulting wheel."""
+    _assert_snapshot(snapshot)
+    source_root = _extract_inspected_sdist(
+        inspection, cwd / "sdist-source", artifact=snapshot.path
     )
-    if (
-        values["metadata_version"] != PROJECT_VERSION
-        or values["package_version"] != PROJECT_VERSION
-    ):
-        raise RuntimeError(f"installed metadata version does not match {artifact.name}")
-    origin_value = values["import_origin"]
-    if not isinstance(origin_value, str) or not origin_value:
-        raise RuntimeError("installed distribution returned an invalid import origin")
-    origin = Path(origin_value).resolve()
-    if not origin.is_relative_to(environment) or origin.is_relative_to(REPOSITORY):
-        raise RuntimeError(f"stableboundary imported from the wrong location: {origin}")
-    if origin.name != "__init__.py" or origin.parent.name != PROJECT_NAME:
+    source_before = _tree_inventory(source_root)
+    _assert_snapshot(snapshot)
+    output = cwd / "sdist-wheel"
+    output.mkdir()
+    _run(
+        [
+            str(python),
+            "-m",
+            "build",
+            "--wheel",
+            "--no-isolation",
+            "--outdir",
+            str(output),
+            str(source_root),
+        ],
+        cwd=cwd,
+        stage=f"wheel build from inspected {snapshot.source_name}",
+        timeout_seconds=INSTALL_TIMEOUT_SECONDS,
+    )
+    _assert_snapshot(snapshot)
+    if _tree_inventory(source_root) != source_before:
+        raise RuntimeError("sdist source tree changed while its wheel was being built")
+    outputs = sorted(output.iterdir(), key=lambda path: path.name)
+    if len(outputs) != 1 or outputs[0].name != EXPECTED_WHEEL:
         raise RuntimeError(
-            f"stableboundary imported from an unexpected package path: {origin}"
+            "sdist build did not produce exactly the expected wheel: "
+            f"{[path.name for path in outputs]!r}"
+        )
+    built_wheel = outputs[0].resolve()
+    built_inspection = _inspect_archives(built_wheel, snapshot.path)
+    if built_inspection.sdist_sha256 != snapshot.sha256:
+        raise RuntimeError("sdist changed while its wheel was being built")
+    return built_wheel, built_inspection
+
+
+def _tree_entry_identity(path: Path) -> TreeEntryIdentity:
+    if path.is_symlink():
+        content = os.readlink(path).encode("utf-8", errors="surrogatepass")
+        return TreeEntryIdentity(
+            kind="symlink",
+            size=len(content),
+            sha256=hashlib.sha256(b"symlink\0" + content).hexdigest(),
+        )
+    if not path.is_file():
+        raise RuntimeError(f"virtual environment contains a special file: {path}")
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as stream:
+        while block := stream.read(1024 * 1024):
+            size += len(block)
+            digest.update(block)
+    return TreeEntryIdentity(kind="file", size=size, sha256=digest.hexdigest())
+
+
+def _tree_inventory(root: Path) -> TreeInventory:
+    if not root.is_dir() or root.is_symlink():
+        raise RuntimeError(f"virtual environment root is invalid: {root}")
+    entries: dict[str, TreeEntryIdentity] = {}
+    directories: set[str] = set()
+    for current, raw_directories, raw_files in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        for name in sorted(raw_directories):
+            path = current_path / name
+            relative = path.relative_to(root).as_posix()
+            if path.is_symlink():
+                entries[relative] = _tree_entry_identity(path)
+                raw_directories.remove(name)
+            elif path.is_dir():
+                directories.add(relative)
+            else:
+                raise RuntimeError(f"virtual environment has an invalid entry: {path}")
+        for name in sorted(raw_files):
+            path = current_path / name
+            relative = path.relative_to(root).as_posix()
+            entries[relative] = _tree_entry_identity(path)
+    return TreeInventory(entries=entries, directories=frozenset(directories))
+
+
+def _site_packages(environment: Path) -> Path:
+    if os.name == "nt":
+        candidates = [environment / "Lib" / "site-packages"]
+    else:
+        version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+        candidates = [environment / "lib" / version / "site-packages"]
+    existing = [candidate.resolve() for candidate in candidates if candidate.is_dir()]
+    if len(existing) != 1:
+        raise RuntimeError(
+            f"virtual environment has an unexpected site-packages layout: {existing!r}"
+        )
+    selected = existing[0]
+    if (
+        selected.is_symlink()
+        or not selected.is_relative_to(environment.resolve())
+        or selected.is_relative_to(REPOSITORY.resolve())
+    ):
+        raise RuntimeError(
+            f"site-packages is outside the private environment: {selected}"
+        )
+    return selected
+
+
+def _expected_environment_delta(
+    environment: Path, site_packages: Path, installed_names: set[str]
+) -> tuple[set[str], set[str]]:
+    site_prefix = site_packages.relative_to(environment).as_posix()
+    files = {f"{site_prefix}/{name}" for name in installed_names}
+    directories: set[str] = set()
+    for name in files:
+        parent = PurePosixPath(name).parent
+        while parent != PurePosixPath("."):
+            directories.add(parent.as_posix())
+            parent = parent.parent
+    return files, directories
+
+
+def _validate_environment_delta(
+    before: TreeInventory,
+    after: TreeInventory,
+    *,
+    expected_files: set[str],
+    expected_directories: set[str],
+) -> None:
+    removed = set(before.entries) - set(after.entries)
+    changed = {
+        name
+        for name, identity in before.entries.items()
+        if name in after.entries and after.entries[name] != identity
+    }
+    added = set(after.entries) - set(before.entries)
+    expected_added_directories = expected_directories - set(before.directories)
+    added_directories = set(after.directories) - set(before.directories)
+    removed_directories = set(before.directories) - set(after.directories)
+    if (
+        removed
+        or changed
+        or added != expected_files
+        or added_directories != expected_added_directories
+        or removed_directories
+    ):
+        raise RuntimeError(
+            "artifact installation changed files outside the exact distribution "
+            f"manifest: removed={sorted(removed)!r}, changed={sorted(changed)!r}, "
+            f"unexpected={sorted(added - expected_files)!r}, "
+            f"missing={sorted(expected_files - added)!r}, "
+            "unexpected_directories="
+            f"{sorted(added_directories - expected_added_directories)!r}, "
+            f"removed_directories={sorted(removed_directories)!r}"
         )
 
-    versions = _require_keys(
-        "installed runtime versions",
-        values["versions"],
-        {
-            "python",
-            "numpy",
-            "scipy",
-            "platform_system",
-            "platform_machine",
-            PROJECT_NAME,
-        },
-    )
-    if versions[PROJECT_NAME] != PROJECT_VERSION:
-        raise RuntimeError("installed package runtime version is stale")
-    for name in ("python", "numpy", "scipy", "platform_system", "platform_machine"):
-        if not isinstance(versions[name], str) or not versions[name].strip():
-            raise RuntimeError(f"installed {name} runtime version is invalid")
-    python_match = re.fullmatch(
-        r"(\d+)\.(\d+)\.(\d+)(?:[A-Za-z0-9.+-]*)?", versions["python"]
-    )
-    if python_match is None or (
-        int(python_match.group(1)),
-        int(python_match.group(2)),
-    ) not in {(3, 12), (3, 13), (3, 14)}:
-        raise RuntimeError("installed Python runtime is unsupported")
-    scipy_match = re.fullmatch(r"1\.18\.(\d+)(?:[A-Za-z0-9.+-]*)?", versions["scipy"])
-    if scipy_match is None:
-        raise RuntimeError("installed SciPy runtime is outside >=1.18,<1.19")
 
-    installed_files = _require_keys(
-        "installed package files",
-        values["package_files"],
-        set(package_files),
-    )
-    for name, trusted in package_files.items():
-        identity = _require_keys(
-            f"installed package file {name}",
-            installed_files[name],
-            {"size", "sha256"},
-        )
-        if identity != {"size": trusted.size, "sha256": trusted.sha256}:
-            raise RuntimeError(
-                f"installed package file differs from trusted repository source: {name}"
-            )
-
-    direct_url = _require_keys(
-        "direct_url.json",
-        values["direct_url"],
-        {"archive_info", "url"},
-    )
+def _validate_direct_url(
+    value: object, *, artifact: Path, expected_digest: str
+) -> None:
+    direct_url = _require_keys("direct_url.json", value, {"archive_info", "url"})
     raw_url = direct_url["url"]
     if not isinstance(raw_url, str):
         raise RuntimeError("installed direct_url.json has a non-string URL")
@@ -1025,37 +1180,100 @@ def _validate_installed_distribution(
     legacy_hash = archive_info.get("hash")
     if legacy_hash is not None and legacy_hash != f"sha256={expected_digest}":
         raise RuntimeError("installed direct_url.json reports a contradictory hash")
-    return origin
 
 
-def _installed_probe(python: Path, *, cwd: Path, artifact: Path) -> dict[str, Any]:
+def _validate_installed_distribution(
+    *,
+    artifact: Path,
+    environment: Path,
+    expected_digest: str,
+    inspection: ArchiveInspection,
+    before: TreeInventory,
+) -> InstalledDistribution:
+    """Authenticate the complete install from raw paths before any import."""
+    site_packages = _site_packages(environment)
+    record_path = f"{DIST_INFO}/RECORD"
+    generated_names = {
+        f"{DIST_INFO}/INSTALLER",
+        f"{DIST_INFO}/REQUESTED",
+        f"{DIST_INFO}/direct_url.json",
+    }
+    installed_names = set(inspection.wheel_files) | generated_names
+    expected_files, expected_directories = _expected_environment_delta(
+        environment, site_packages, installed_names
+    )
+    after = _tree_inventory(environment)
+    _validate_environment_delta(
+        before,
+        after,
+        expected_files=expected_files,
+        expected_directories=expected_directories,
+    )
+    startup_files = sorted(
+        path.name
+        for path in site_packages.iterdir()
+        if path.name in {"sitecustomize.py", "usercustomize.py"}
+        or path.suffix.casefold() == ".pth"
+    )
+    if startup_files:
+        raise RuntimeError(
+            f"site-packages contains forbidden startup files: {startup_files!r}"
+        )
+
+    installed_files: dict[str, bytes] = {}
+    for name in sorted(installed_names):
+        path = site_packages.joinpath(*PurePosixPath(name).parts)
+        if not path.is_file() or path.is_symlink():
+            raise RuntimeError(f"installed distribution file is invalid: {name}")
+        installed_files[name] = path.read_bytes()
+    for name, expected in inspection.wheel_files.items():
+        if name != record_path and installed_files[name] != expected:
+            raise RuntimeError(
+                f"installed distribution file differs from inspected wheel: {name}"
+            )
+    if installed_files[f"{DIST_INFO}/INSTALLER"] != b"pip\n":
+        raise RuntimeError("installed distribution has an unexpected INSTALLER")
+    if installed_files[f"{DIST_INFO}/REQUESTED"] != b"":
+        raise RuntimeError("installed distribution has an unexpected REQUESTED marker")
+    try:
+        direct_url = json.loads(
+            installed_files[f"{DIST_INFO}/direct_url.json"].decode("utf-8")
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("installed direct_url.json is invalid") from error
+    _validate_direct_url(direct_url, artifact=artifact, expected_digest=expected_digest)
+    _validate_record(artifact, installed_files[record_path], installed_files)
+    origin = (site_packages / PROJECT_NAME / "__init__.py").resolve()
+    if (
+        not origin.is_file()
+        or origin.is_symlink()
+        or not origin.is_relative_to(environment.resolve())
+        or origin.is_relative_to(REPOSITORY.resolve())
+    ):
+        raise RuntimeError(f"installed package origin is invalid: {origin}")
+    return InstalledDistribution(site_packages=site_packages, import_origin=origin)
+
+
+def _installed_probe(
+    python: Path,
+    *,
+    cwd: Path,
+    artifact: Path,
+    installed: InstalledDistribution,
+) -> dict[str, Any]:
     source = """
-import hashlib
 import importlib.metadata as metadata
 import json
 import platform
-from pathlib import Path
+import sys
+
+sys.path.insert(0, __SITE_PACKAGES__)
 
 import numpy
 import scipy
 import stableboundary
 
 distribution = metadata.distribution("stableboundary")
-direct_url = distribution.read_text("direct_url.json")
-if direct_url is None:
-    raise RuntimeError("direct_url.json is missing")
-package_root = Path(stableboundary.__file__).resolve().parent
-package_files = {}
-for path in sorted(package_root.rglob("*")):
-    if path.is_symlink():
-        raise RuntimeError(f"installed package contains a symbolic link: {path}")
-    if not path.is_file() or (path.suffix != ".py" and path.name != "py.typed"):
-        continue
-    content = path.read_bytes()
-    package_files[path.relative_to(package_root).as_posix()] = {
-        "size": len(content),
-        "sha256": hashlib.sha256(content).hexdigest(),
-    }
 print(json.dumps({
     "import_origin": stableboundary.__file__,
     "metadata_version": distribution.version,
@@ -1068,13 +1286,14 @@ print(json.dumps({
         "scipy": scipy.__version__,
         "stableboundary": stableboundary.__version__,
     },
-    "package_files": package_files,
-    "direct_url": json.loads(direct_url),
 }, sort_keys=True))
 """
+    source = source.replace(
+        "__SITE_PACKAGES__", json.dumps(str(installed.site_packages))
+    )
     decoded = json.loads(
         _run(
-            [str(python), "-I", "-c", source],
+            [str(python), "-I", "-S", "-c", source],
             cwd=cwd,
             stage=f"installed provenance probe for {artifact.name}",
             timeout_seconds=IMPORT_TIMEOUT_SECONDS,
@@ -1084,6 +1303,55 @@ print(json.dumps({
     if not isinstance(decoded, dict):
         raise RuntimeError("installed provenance probe did not return a JSON object")
     return decoded
+
+
+def _validate_installed_runtime(
+    probe: object, *, installed: InstalledDistribution, artifact: Path
+) -> dict[str, Any]:
+    values = _require_keys(
+        "installed runtime probe",
+        probe,
+        {"import_origin", "metadata_version", "package_version", "versions"},
+    )
+    if (
+        values["metadata_version"] != PROJECT_VERSION
+        or values["package_version"] != PROJECT_VERSION
+    ):
+        raise RuntimeError(f"installed metadata version does not match {artifact.name}")
+    origin_value = values["import_origin"]
+    if not isinstance(origin_value, str):
+        raise RuntimeError("installed runtime returned an invalid import origin")
+    if Path(origin_value).resolve() != installed.import_origin:
+        raise RuntimeError("installed runtime imported unverified package bytes")
+    versions = _require_keys(
+        "installed runtime versions",
+        values["versions"],
+        {
+            "python",
+            "numpy",
+            "scipy",
+            "platform_system",
+            "platform_machine",
+            PROJECT_NAME,
+        },
+    )
+    if versions[PROJECT_NAME] != PROJECT_VERSION:
+        raise RuntimeError("installed package runtime version is stale")
+    for name in ("python", "numpy", "scipy", "platform_system", "platform_machine"):
+        if not isinstance(versions[name], str) or not versions[name].strip():
+            raise RuntimeError(f"installed {name} runtime version is invalid")
+    python_match = re.fullmatch(
+        r"(\d+)\.(\d+)\.(\d+)(?:[A-Za-z0-9.+-]*)?", versions["python"]
+    )
+    if python_match is None or (
+        int(python_match.group(1)),
+        int(python_match.group(2)),
+    ) not in {(3, 12), (3, 13), (3, 14)}:
+        raise RuntimeError("installed Python runtime is unsupported")
+    scipy_match = re.fullmatch(r"1\.18\.(\d+)(?:[A-Za-z0-9.+-]*)?", versions["scipy"])
+    if scipy_match is None:
+        raise RuntimeError("installed SciPy runtime is outside >=1.18,<1.19")
+    return versions
 
 
 def _oracle_document() -> dict[str, Any]:
@@ -2951,12 +3219,10 @@ def _validate_science_probe(
 
 
 def _exercise_archive(
-    snapshot: ArtifactSnapshot,
+    source_artifact: Path,
     *,
-    package_files: dict[str, FileIdentity],
+    inspection: ArchiveInspection,
 ) -> dict[str, Any]:
-    artifact = snapshot.path
-    _assert_snapshot(snapshot)
     with tempfile.TemporaryDirectory(prefix="stableboundary-smoke-") as temporary:
         root = Path(temporary).resolve()
         if root.is_relative_to(REPOSITORY.resolve()):
@@ -2971,101 +3237,120 @@ def _exercise_archive(
             timeout_seconds=VENV_TIMEOUT_SECONDS,
         )
         python = _venv_python(environment)
-        _assert_snapshot(snapshot)
-        _install_archive(python, artifact, cwd=work)
-        _assert_snapshot(snapshot)
-        probe = _installed_probe(python, cwd=work, artifact=artifact)
-        _assert_snapshot(snapshot)
-        origin = _validate_installed_distribution(
-            probe,
-            artifact=artifact,
-            environment=environment,
-            expected_digest=snapshot.sha256,
-            package_files=package_files,
-        )
-        copied_example = work / EXAMPLE.name
-        shutil.copy2(EXAMPLE, copied_example)
-        decoded = json.loads(
+        _prepare_environment(python, cwd=work)
+
+        if source_artifact.name == EXPECTED_SDIST:
+            with _artifact_snapshot(
+                source_artifact, expected_digest=inspection.sdist_sha256
+            ) as sdist_snapshot:
+                wheel_source, wheel_inspection = _build_inspected_sdist_wheel(
+                    python, sdist_snapshot, inspection, cwd=work
+                )
+        elif source_artifact.name == EXPECTED_WHEEL:
+            wheel_source = source_artifact
+            wheel_inspection = inspection
+        else:
+            raise RuntimeError(f"unsupported source artifact: {source_artifact.name}")
+
+        before = _tree_inventory(environment)
+        with _artifact_snapshot(
+            wheel_source, expected_digest=wheel_inspection.wheel_sha256
+        ) as wheel_snapshot:
+            _install_verified_wheel(python, wheel_snapshot, cwd=work)
+            installed = _validate_installed_distribution(
+                artifact=wheel_snapshot.path,
+                environment=environment,
+                expected_digest=wheel_snapshot.sha256,
+                inspection=wheel_inspection,
+                before=before,
+            )
             _run(
-                [str(python), "-I", str(copied_example)],
+                [
+                    str(python),
+                    "-m",
+                    "pip",
+                    "--isolated",
+                    "--no-input",
+                    "check",
+                    "--disable-pip-version-check",
+                ],
                 cwd=work,
-                stage=f"public example for {artifact.name}",
-                timeout_seconds=EXAMPLE_TIMEOUT_SECONDS,
-                capture=True,
+                stage=f"post-proof dependency check for {source_artifact.name}",
+                timeout_seconds=IMPORT_TIMEOUT_SECONDS,
             )
-        )
-        if not isinstance(decoded, dict):
-            raise RuntimeError("installed example did not return a JSON object")
-        payload: dict[str, Any] = decoded
-        _assert_snapshot(snapshot)
-        science_probe = _installed_science_probe(
-            python,
-            cwd=work,
-            artifact=artifact,
-        )
-        _assert_snapshot(snapshot)
-        science_values = _require_keys(
-            "independent installed science probe",
-            science_probe,
-            {"primary", "reflection"},
-        )
-        independent_payload = science_values["primary"]
-        if not isinstance(independent_payload, dict):
-            raise RuntimeError(
-                "independent installed science probe omitted its payload"
+            probe = _installed_probe(
+                python,
+                cwd=work,
+                artifact=wheel_snapshot.path,
+                installed=installed,
             )
-        _assert_science_payload_parity(payload, independent_payload)
-        versions = probe.get("versions")
-        if not isinstance(versions, dict):
-            raise RuntimeError("installed provenance probe omitted runtime versions")
-        _validate_science_probe(
-            payload,
-            science_values["reflection"],
-            runtime_versions=versions,
-        )
-        _assert_snapshot(snapshot)
-        print(
-            json.dumps(
-                {
-                    "artifact": artifact.name,
-                    "origin": str(origin),
-                    "status": payload["status"],
-                    "counts": payload["counts"],
-                    "posterior_mass": payload["posterior_mass"],
-                    "joint_total_variation": payload["refinement"][
-                        "joint_total_variation"
-                    ],
-                },
-                sort_keys=True,
+            versions = _validate_installed_runtime(
+                probe, installed=installed, artifact=wheel_snapshot.path
             )
-        )
-        return payload
+            copied_example = work / EXAMPLE.name
+            shutil.copy2(EXAMPLE, copied_example)
+            decoded = json.loads(
+                _run(
+                    [str(python), "-I", str(copied_example)],
+                    cwd=work,
+                    stage=f"public example for {source_artifact.name}",
+                    timeout_seconds=EXAMPLE_TIMEOUT_SECONDS,
+                    capture=True,
+                )
+            )
+            if not isinstance(decoded, dict):
+                raise RuntimeError("installed example did not return a JSON object")
+            payload: dict[str, Any] = decoded
+            science_probe = _installed_science_probe(
+                python,
+                cwd=work,
+                artifact=source_artifact,
+            )
+            science_values = _require_keys(
+                "independent installed science probe",
+                science_probe,
+                {"primary", "reflection"},
+            )
+            independent_payload = science_values["primary"]
+            if not isinstance(independent_payload, dict):
+                raise RuntimeError(
+                    "independent installed science probe omitted its payload"
+                )
+            _assert_science_payload_parity(payload, independent_payload)
+            _validate_science_probe(
+                payload,
+                science_values["reflection"],
+                runtime_versions=versions,
+            )
+            print(
+                json.dumps(
+                    {
+                        "artifact": source_artifact.name,
+                        "installed_wheel": wheel_snapshot.source_name,
+                        "origin": str(installed.import_origin),
+                        "status": payload["status"],
+                        "counts": payload["counts"],
+                        "posterior_mass": payload["posterior_mass"],
+                        "joint_total_variation": payload["refinement"][
+                            "joint_total_variation"
+                        ],
+                    },
+                    sort_keys=True,
+                )
+            )
+            return payload
 
 
 def main() -> None:
     """Inspect, install, and run the real example from both fresh archives."""
     wheel, sdist = _archives()
-    with _artifact_snapshots(wheel, sdist) as (wheel_snapshot, sdist_snapshot):
-        inspection = _inspect_archives(wheel_snapshot.path, sdist_snapshot.path)
-        _assert_snapshot(wheel_snapshot)
-        _assert_snapshot(sdist_snapshot)
-        if (
-            inspection.wheel_sha256 != wheel_snapshot.sha256
-            or inspection.sdist_sha256 != sdist_snapshot.sha256
-        ):
-            raise RuntimeError("artifact snapshots changed during archive inspection")
-        wheel_payload = _exercise_archive(
-            wheel_snapshot,
-            package_files=inspection.package_files,
+    inspection = _inspect_archives(wheel, sdist)
+    wheel_payload = _exercise_archive(wheel, inspection=inspection)
+    sdist_payload = _exercise_archive(sdist, inspection=inspection)
+    if wheel_payload != sdist_payload:
+        raise RuntimeError(
+            "wheel and sdist executions produced different scientific evidence"
         )
-        sdist_payload = _exercise_archive(
-            sdist_snapshot,
-            package_files=inspection.package_files,
-        )
-        if wheel_payload != sdist_payload:
-            raise RuntimeError(
-                "wheel and sdist executions produced different scientific evidence"
-            )
 
 
 if __name__ == "__main__":
