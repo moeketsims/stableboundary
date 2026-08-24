@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "stableboundary"
 version = "0.1.0"
 description = "Auditable Bayesian inference for alpha-stable laws near the Gaussian boundary"
+readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
 authors = [
@@ -31,13 +32,29 @@ dev = [
 [tool.hatch.build.targets.sdist]
 include = [
   "/LICENSE",
+  "/README.md",
   "/pyproject.toml",
   "/src/stableboundary",
+]
+exclude = [
+  "/.planning",
+  "/build",
+  "/dist",
   "/tests",
+  "/tmp",
+  "**/__pycache__",
+  "**/*.aux",
+  "**/*.log",
+  "**/*.py[co]",
+  "**/*.tex",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/stableboundary"]
+exclude = [
+  "**/__pycache__",
+  "**/*.py[co]",
+]
 
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"

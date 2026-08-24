@@ -13,10 +13,9 @@ import pytest
 def test_built_archives_run_public_example() -> None:
     """Delegate artifact inspection, installation, and execution to one runner."""
     repository = Path(__file__).resolve().parents[1]
-    completed = subprocess.run(
+    subprocess.run(
         [sys.executable, str(repository / "scripts" / "smoke_wheel.py")],
         cwd=repository,
-        check=False,
+        check=True,
         shell=False,
     )
-    assert completed.returncode == 0
