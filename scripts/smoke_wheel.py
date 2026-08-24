@@ -36,7 +36,28 @@ DIST = REPOSITORY / "dist"
 EXAMPLE = REPOSITORY / "examples" / "known_nuisance_fit.py"
 ORACLE = REPOSITORY / "scripts" / "artifact_oracle.json"
 PROJECT_NAME = "stableboundary"
-PROJECT_VERSION = "0.1.0"
+
+
+def _read_project_version(path: Path) -> str:
+    try:
+        with path.open("rb") as stream:
+            document = tomllib.load(stream)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise RuntimeError(f"cannot read project identity from {path}") from error
+    project = document.get("project")
+    if not isinstance(project, dict) or project.get("name") != PROJECT_NAME:
+        raise RuntimeError(f"unexpected project name in {path}")
+    version = project.get("version")
+    if (
+        not isinstance(version, str)
+        or not version.isascii()
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+!-]*", version) is None
+    ):
+        raise RuntimeError(f"missing or invalid project version in {path}")
+    return version
+
+
+PROJECT_VERSION = _read_project_version(REPOSITORY / "pyproject.toml")
 EXPECTED_WHEEL = f"{PROJECT_NAME}-{PROJECT_VERSION}-py3-none-any.whl"
 EXPECTED_SDIST = f"{PROJECT_NAME}-{PROJECT_VERSION}.tar.gz"
 EXPECTED_SDIST_ROOT = f"{PROJECT_NAME}-{PROJECT_VERSION}"

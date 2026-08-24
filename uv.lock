@@ -1326,7 +1326,7 @@ requires-dist = [
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.5,<2" },
     { name = "check-wheel-contents", marker = "extra == 'dev'", specifier = ">=0.6.3,<1" },
     { name = "coverage", marker = "extra == 'dev'", specifier = ">=7.15,<8" },
-    { name = "hatchling", marker = "extra == 'dev'", specifier = ">=1.32,<2" },
+    { name = "hatchling", marker = "extra == 'dev'", specifier = "==1.32.0" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.161" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.3,<3" },
     { name = "numpy", specifier = ">=2.2" },

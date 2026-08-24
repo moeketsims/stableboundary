@@ -58,6 +58,46 @@ WHEEL = (
 )
 
 
+def test_project_version_is_derived_from_repository_metadata(tmp_path: Path) -> None:
+    metadata = tmp_path / "pyproject.toml"
+    metadata.write_text(
+        "[project]\nname = 'stableboundary'\nversion = '9.8.7'\n",
+        encoding="utf-8",
+    )
+
+    assert smoke_wheel._read_project_version(metadata) == "9.8.7"
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        (
+            "[project]\nname = 'substitute'\nversion = '9.8.7'\n",
+            "project name",
+        ),
+        ("[project]\nname = 'stableboundary'\n", "project version"),
+        (
+            "[project]\nname = 'stableboundary'\nversion = 'bad/version'\n",
+            "project version",
+        ),
+        ("[project\n", "project identity"),
+    ],
+)
+def test_project_version_rejects_invalid_metadata(
+    tmp_path: Path, content: str, message: str
+) -> None:
+    metadata = tmp_path / "pyproject.toml"
+    metadata.write_text(content, encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=message):
+        smoke_wheel._read_project_version(metadata)
+
+
+def test_project_version_rejects_missing_metadata(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="project identity"):
+        smoke_wheel._read_project_version(tmp_path / "missing.toml")
+
+
 def _wheel_members() -> dict[str, bytes]:
     package = smoke_wheel._repository_package_payload()
     return {
@@ -178,7 +218,7 @@ def _valid_payload() -> dict[str, object]:
         }
     return {
         "schema_version": 1,
-        "package_version": "0.1.0",
+        "package_version": smoke_wheel.PROJECT_VERSION,
         "status": "research_uncertified",
         "method": "exact_finite_three_cell",
         "parameterization": "S0",
@@ -327,7 +367,7 @@ def test_sdist_rejects_unsafe_link_targets(
             f"{root}/examples/{smoke_wheel.EXAMPLE.name}",
             smoke_wheel.EXAMPLE.read_bytes(),
         )
-        link = tarfile.TarInfo("stableboundary-0.1.0/link.txt")
+        link = tarfile.TarInfo(f"{smoke_wheel.EXPECTED_SDIST_ROOT}/link.txt")
         link.type = link_type
         link.linkname = target
         archive.addfile(link)
@@ -402,7 +442,10 @@ def test_archive_discovery_requires_canonical_name_and_version(
             "unexpected Name",
         ),
         (
-            METADATA.replace(b"Version: 0.1.0\n", b"Version: 9.9.9\n"),
+            METADATA.replace(
+                f"Version: {smoke_wheel.PROJECT_VERSION}\n".encode(),
+                b"Version: 9.9.9\n",
+            ),
             "unexpected Version",
         ),
         (
@@ -414,8 +457,8 @@ def test_archive_discovery_requires_canonical_name_and_version(
         ),
         (
             METADATA.replace(
-                b"Version: 0.1.0\n",
-                b"Version: 0.1.0\nVersion: 9.9.9\n",
+                f"Version: {smoke_wheel.PROJECT_VERSION}\n".encode(),
+                (f"Version: {smoke_wheel.PROJECT_VERSION}\nVersion: 9.9.9\n").encode(),
             ),
             "unexpected Version",
         ),
@@ -462,7 +505,7 @@ def test_minimal_canonical_archives_pass_identity_and_payload_checks(
     [
         "sitecustomize.py",
         "payload.pth",
-        "stableboundary-0.1.0.data/scripts/runner.py",
+        f"stableboundary-{smoke_wheel.PROJECT_VERSION}.data/scripts/runner.py",
         "substitute-0.1.0.dist-info/METADATA",
         "top_level_module.py",
         "secret.env",
