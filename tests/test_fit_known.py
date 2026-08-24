@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from numpy.typing import ArrayLike
+from scipy.optimize import brentq  # type: ignore[import-untyped]
 
 import stableboundary.posterior as posterior_module
 from stableboundary import fit_known_nuisance
@@ -147,6 +148,104 @@ def test_exact_uniform_no_data_posterior_has_analytic_normalization() -> None:
     assert np.sum(posterior.mass * posterior.p_nodes) == pytest.approx(
         0.5 * (prior.p_min + prior.p_max), abs=2e-14
     )
+    tail = 0.5 * (1.0 - posterior.interval_mass)
+    h_expected = (
+        prior.h_min + tail * (prior.h_max - prior.h_min),
+        0.5 * (prior.h_min + prior.h_max),
+        prior.h_max - tail * (prior.h_max - prior.h_min),
+    )
+    p_expected = (
+        prior.p_min + tail * (prior.p_max - prior.p_min),
+        0.5 * (prior.p_min + prior.p_max),
+        prior.p_max - tail * (prior.p_max - prior.p_min),
+    )
+    expected = {
+        "h": h_expected,
+        "p": p_expected,
+        "alpha": tuple(2.0 - design.r * value for value in reversed(h_expected)),
+        "beta": tuple(2.0 * value - 1.0 for value in p_expected),
+    }
+    for quantity, analytic in expected.items():
+        summary = posterior.summary_record(quantity)
+        actual = (
+            summary.interval_lower,
+            summary.median,
+            summary.interval_upper,
+        )
+        assert actual == pytest.approx(analytic, abs=1e-11)
+
+
+def _uniform_product_cdf(
+    value: float,
+    h_lower: float,
+    h_upper: float,
+    p_lower: float,
+    p_upper: float,
+) -> float:
+    full_upper = min(h_upper, value / p_upper)
+    full_area = max(0.0, full_upper - h_lower) * (p_upper - p_lower)
+    partial_lower = max(h_lower, value / p_upper)
+    partial_upper = min(h_upper, value / p_lower)
+    partial_area = 0.0
+    if partial_upper > partial_lower:
+        partial_area = value * np.log(partial_upper / partial_lower) - p_lower * (
+            partial_upper - partial_lower
+        )
+    area = (h_upper - h_lower) * (p_upper - p_lower)
+    return min(1.0, max(0.0, (full_area + partial_area) / area))
+
+
+def test_exact_uniform_product_quantiles_use_continuous_pushforward() -> None:
+    design = LocalDesign.from_sample_size(128)
+    prior = LocalPrior(design=design, p_min=0.10, p_max=0.70)
+    posterior = compute_exact_posterior(
+        _no_data_counts(design),
+        design,
+        prior,
+        backend=_AnalyticBackend(),
+    )
+
+    def analytic_quantile(probability: float, p_lower: float, p_upper: float) -> float:
+        product = brentq(
+            lambda value: (
+                _uniform_product_cdf(
+                    value,
+                    prior.h_min,
+                    prior.h_max,
+                    p_lower,
+                    p_upper,
+                )
+                - probability
+            ),
+            prior.h_min * p_lower,
+            prior.h_max * p_upper,
+        )
+        return design.r * product
+
+    tail = 0.5 * (1.0 - posterior.interval_mass)
+    probabilities = (tail, 0.5, 1.0 - tail)
+    expected_positive = tuple(
+        analytic_quantile(value, prior.p_min, prior.p_max) for value in probabilities
+    )
+    expected_negative = tuple(
+        analytic_quantile(value, 1.0 - prior.p_max, 1.0 - prior.p_min)
+        for value in probabilities
+    )
+    positive = posterior.summary_record("tau_plus")
+    negative = posterior.summary_record("tau_minus")
+    for summary, expected, p_lower, p_upper in (
+        (positive, expected_positive, prior.p_min, prior.p_max),
+        (negative, expected_negative, 1.0 - prior.p_max, 1.0 - prior.p_min),
+    ):
+        actual = (
+            summary.interval_lower,
+            summary.median,
+            summary.interval_upper,
+        )
+        scale = design.r * (prior.h_max * p_upper - prior.h_min * p_lower)
+        assert np.max(np.abs(np.asarray(actual) - np.asarray(expected))) / scale <= 1e-9
+    assert positive.median != pytest.approx(negative.median)
+    assert all(item.median >= 0.0 for item in posterior.refinement.summaries)
 
 
 def test_exact_too_tight_refinement_is_a_structured_failure() -> None:
@@ -223,10 +322,15 @@ def test_fit_known_returns_finite_six_quantity_summary_and_json_audit(
     parameters = fit.summary()["parameters"]
     assert isinstance(parameters, dict)
     assert set(parameters) == {"h", "p", "alpha", "beta", "tau_plus", "tau_minus"}
-    for value in parameters.values():
+    for name, value in parameters.items():
         assert isinstance(value, dict)
         assert np.isfinite(value["mean"])
         assert np.isfinite(value["median"])
+        retained = fit.posterior.summary_record(name)
+        assert value["mean"] == retained.mean
+        assert value["median"] == retained.median
+        assert value["credible_interval"]["lower"] == retained.interval_lower
+        assert value["credible_interval"]["upper"] == retained.interval_upper
     encoded = json.dumps(fit.audit_record(), allow_nan=False)
     assert "research_uncertified" in encoded
     assert "independent calibration" in encoded
