@@ -8,6 +8,7 @@ import csv
 import io
 import json
 import os
+import platform
 import stat
 import subprocess
 import sys
@@ -17,8 +18,11 @@ import zipfile
 from hashlib import sha256
 from pathlib import Path
 
+import numpy as np
 import pytest
+import scipy
 
+import stableboundary as sb
 from scripts import smoke_wheel
 
 
@@ -695,6 +699,55 @@ def test_oracle_backed_payload_passes_full_scientific_validation() -> None:
         _valid_payload(),
         runtime_versions=_valid_runtime_versions(),
     )
+
+
+def test_source_tree_simulation_fingerprint_is_explicitly_approved() -> None:
+    """Collect the live fingerprint in every ordinary dependency/OS CI job."""
+    payload = _valid_payload()
+    design = sb.LocalDesign.from_sample_size(5_000)
+    truth = sb.StableParams(
+        alpha=2.0 - 1.5 * design.r,
+        beta=0.35,
+        loc=0.0,
+        scale=1.0,
+    )
+    seed = 20_260_824
+    simulated = sb.simulate(truth, size=5_000, random_state=seed)
+    sample_bytes = np.ascontiguousarray(simulated, dtype="<f8").tobytes(order="C")
+    n_minus = int(np.count_nonzero(simulated <= -design.threshold))
+    n_plus = int(np.count_nonzero(simulated >= design.threshold))
+    payload["simulation"] = {
+        "dtype": "<f8",
+        "rng_algorithm": (
+            f"numpy.random.{np.random.default_rng(seed).bit_generator.__class__.__name__}"
+        ),
+        "simulator_algorithm": "scipy.stats.levy_stable.rvs:S0:private-generator:v1",
+        "platform_system": platform.system(),
+        "platform_machine": platform.machine(),
+        "python_version": platform.python_version(),
+        "numpy_version": np.__version__,
+        "scipy_version": scipy.__version__,
+        "sample_sha256": sha256(sample_bytes).hexdigest(),
+        "counts": {
+            "n_minus": n_minus,
+            "n_zero": int(simulated.size - n_minus - n_plus),
+            "n_plus": n_plus,
+        },
+        "minimum": float(np.min(simulated)),
+        "maximum": float(np.max(simulated)),
+    }
+    backend = payload["backend"]
+    assert isinstance(backend, dict)
+    backend["library_version"] = scipy.__version__
+    runtime_versions = {
+        "python": platform.python_version(),
+        "platform_system": platform.system(),
+        "platform_machine": platform.machine(),
+        "numpy": np.__version__,
+        "scipy": scipy.__version__,
+    }
+
+    smoke_wheel._validate_example(payload, runtime_versions=runtime_versions)
 
 
 @pytest.mark.parametrize(
