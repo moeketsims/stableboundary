@@ -57,7 +57,7 @@ created: 2026-08-24
 | FIT-01 | Fixed-seed `S0` simulation reproducibility | unit | `python -m pytest -q tests/test_simulation.py` | ⬜ pending |
 | FIT-02 | Exact finite multinomial posterior through deterministic 2-D quadrature | integration | `python -m pytest -q tests/test_fit_known.py -k exact` | ⬜ pending |
 | FIT-03 | Posterior grid normalizes and all required summaries are finite | integration | `python -m pytest -q tests/test_fit_known.py -k summary` | ⬜ pending |
-| FIT-04 | Zero and one-sided counts warn that beta is prior-dominated | unit/integration | `python -m pytest -q tests/test_identification.py` | ⬜ pending |
+| FIT-04 | Zero counts are prior-dominated; one-sided positive counts report evidence and quantitative information without a precision claim | unit/integration | `python -m pytest -q tests/test_identification.py` | ⬜ pending |
 | FIT-05 | Predictive draws, quantiles, and tail probabilities are reproducible | integration | `python -m pytest -q tests/test_prediction.py` | ⬜ pending |
 | FIT-06 | Predictive variance is refused for posterior support below alpha two | unit | `python -m pytest -q tests/test_prediction.py -k variance` | ⬜ pending |
 | FIT-07 | Limiting Gamma-Beta method is explicit and never default | unit/regression | `python -m pytest -q tests/test_approximation.py` | ⬜ pending |

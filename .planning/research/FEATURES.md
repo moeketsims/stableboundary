@@ -23,7 +23,7 @@ the reduction is unsupported.
 | Reproducible simulation | Users can generate seeded `S0` samples | Low | Stable probability backend |
 | Known-nuisance fit | Exact finite three-cell posterior for known `loc` and `scale` | High | Design, cells, probability engine, quadrature |
 | Posterior summaries | Intervals for `h`, `p`, `alpha`, `beta`, and signed gaps | Medium | Posterior and result modules |
-| Identification warnings | Zero or one-sided counts label beta as prior-dominated or unidentified | Medium | Diagnostics |
+| Identification warnings | Zero total tails label beta prior-dominated; one-sided positive counts report directional evidence and information diagnostics without a validated precision claim | Medium | Diagnostics |
 | Numerical diagnostics | Invalid mass, normalization, or backend disagreement raises a structured error | High | Backend protocol |
 | Full reference fit | Full `S0` posterior under the same prior is available for validation and fallback | High | Stable log-density and quadrature |
 | Explicit method state | Results are `reduced`, `full_fallback`, `refused`, or `research_uncertified`; no silent switch | Medium | Result state machine |

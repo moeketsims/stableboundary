@@ -64,8 +64,10 @@ status, and fallback decision.
 - [ ] **FIT-03**: The known-nuisance result returns normalized posterior weights,
   posterior intervals for `h`, `p`, `alpha`, `beta`, and signed tail gaps, and
   the observed cell counts.
-- [ ] **FIT-04**: A fit with zero or one-sided exceedances marks beta as
-  prior-dominated or unidentified and does not imply data-driven skewness.
+- [ ] **FIT-04**: A fit with zero total exceedances marks beta as
+  prior-dominated or unidentified; a one-sided positive count reports
+  one-sided evidence and quantitative information diagnostics without claiming
+  validated precise identification.
 - [ ] **FIT-05**: A user can request posterior predictive draws, quantiles,
   signed tail probabilities, and expected exceedance counts from the full
   stable sampling model.

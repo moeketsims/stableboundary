@@ -54,7 +54,9 @@ Do not begin with PyMC, Stan, NumPyro, JAX, native extensions, or SMC. The first
 - Seeded `S0` simulation with the bit generator and environment recorded.
 - Exact-model finite three-cell multinomial posterior for known location and scale, calculated with finite stable probabilities and deterministic two-dimensional quadrature.
 - Summaries for `alpha`, `beta`, `h`, `p`, `tau_plus`, `tau_minus`, and predictive signed-tail probabilities; location and scale explicitly marked fixed.
-- Identification diagnostics that label beta as identified, weak, prior-dominated, or unidentified rather than turning a near-zero posterior mean into evidence of symmetry.
+- Identification diagnostics that distinguish zero-tail prior dominance from
+  one-sided directional evidence, report quantitative information gain, and do
+  not use a validated-precision label before calibration.
 - A separately evaluated full `S0` posterior on a common refined grid, observed-data posterior-TV comparison, explicit reduction/fallback/refusal policy, and at least one deliberately triggered fallback example.
 - Immutable result and versioned JSON-plus-NPZ audit bundle with checksums and `allow_pickle=False`; raw observations are not persisted by default.
 - Executable quickstart, fixed-seed end-to-end fit, clean-wheel integration test, and machine-readable numerical/fallback reports.

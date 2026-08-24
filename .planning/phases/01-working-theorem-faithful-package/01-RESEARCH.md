@@ -159,10 +159,13 @@ gap/intensity direction, while allocation between positive and negative tails
 informs skewness. Therefore:
 
 - With zero total tail counts, update the total intensity through the no-event
-  probability but label `beta`/`p` prior-dominated.
-- With all observed tails on only one side, label `beta` weak or
-  prior-dominated; do not turn an endpoint-leaning posterior into a claim of
-  precise identification.
+  probability but label `beta`/`p` prior-dominated: conditional on zero total
+  events, the limiting sign-allocation likelihood contains no p information.
+- With positive tail counts all on one side, report `one_sided_evidence` and
+  quantitative prior-to-posterior information. The conditional likelihood is
+  proportional to `p**N` or `(1-p)**N`, so it can be strongly informative when
+  N is large; nevertheless, do not promote it to validated precise
+  identification before calibration.
 - If posterior support reaches `alpha=2`, `beta` is unidentified. Phase 1 prior
   support is strictly below two, but the public parameter conversion still
   needs the exact-boundary refusal.
@@ -326,4 +329,3 @@ Phase 1 has no unresolved implementation question that should block planning.
 The unresolved scientific claims—independent numerical agreement, full
 posterior closeness, prospective safety, and certification—are explicitly
 outside this phase and cannot be inferred from its success.
-

@@ -89,8 +89,11 @@ location/scale inference; those have dedicated later phases.
 - Phase 1 results are marked `research_uncertified`; no object can claim
   `certified`, `reduced_safe`, or superiority to a full posterior yet.
 - Zero total tail counts update total intensity through the no-event
-  probability but do not create sign-allocation information. Zero or one-sided
-  tail data must label beta prior-dominated.
+  probability but create no sign-allocation information, so beta/p is
+  prior-dominated. One-sided positive counts contribute a nonconstant
+  conditional-binomial likelihood for p and must be reported as one-sided
+  evidence with quantitative information diagnostics, not categorically
+  dismissed as prior-dominated or promoted to validated precise identification.
 - Posterior prediction uses the full stable sampling model. Predictive
   variance is unavailable whenever posterior support includes `alpha<2`.
 
