@@ -41,10 +41,11 @@ evidence. Its posterior is fitted to a deterministic 5000-observation witness
 with signed-cell counts `(1, 4996, 3)`. Because the three-cell likelihood is
 count-sufficient, the witness makes the inferential input transparent and keeps
 it independent of changes to SciPy's random sampler. The example then runs a
-separate fixed-seed `S0` simulation and reports the canonical little-endian
-sample hash, counts, extrema, algorithms, and runtime versions. The source
-distribution includes the example as `examples/known_nuisance_fit.py`. From a
-source checkout or an unpacked source distribution, run:
+separate fixed-seed `S0` simulation and reports the canonical little-endian raw
+sample hash, five integer-quantized full-sample hashes, counts, extrema, summary
+diagnostics, algorithms, and runtime versions. The source distribution includes
+the example as `examples/known_nuisance_fit.py`. From a source checkout or an
+unpacked source distribution, run:
 
 ```console
 python examples/known_nuisance_fit.py
@@ -95,14 +96,18 @@ probabilities.
 
 The artifact smoke test accepts simulated evidence only for explicitly measured
 operating-system, machine-architecture, NumPy, and SciPy combinations; an
-unknown combination fails closed. A rejection prints the complete observed
-fingerprint, including Python and dependency versions, algorithms, hash,
-counts, and extrema, so a maintainer can review rather than blindly loosen the
-check. Posterior summaries are bound both to retained regression values and to
-a higher-order reference generated without importing `stableboundary`. These
-checks make the artifact reproducible and sensitive to stale or hard-coded
-output, but they do not turn ordinary floating-point calculations into a proof
-certificate.
+unknown combination fails closed. The raw floating-point hash is diagnostic,
+not normative: hosted CPUs and libm implementations can change insignificant
+low bits. Acceptance instead uses the finest integer-quantization grid shown to
+converge across independent hosts for that approved environment, together with
+counts, extrema, and tolerance-bound summary diagnostics. Ordinary CI performs
+two fresh isolated-interpreter simulations to detect process-state pollution.
+A rejection prints the complete observed fingerprint so a maintainer can
+review rather than blindly loosen the check. Posterior summaries are bound both
+to retained regression values and to a higher-order reference generated
+without importing `stableboundary`. These checks make the artifact reproducible
+and sensitive to stale or hard-coded output, but they do not turn ordinary
+floating-point calculations into a proof certificate.
 
 ## Maintainer checks
 
@@ -130,9 +135,10 @@ three-cell likelihood with 48- and 64-node tensor Gauss--Legendre rules and
 cross-checks selected cell probabilities by direct Gil--Pelaez Fourier
 inversion. The generator imports NumPy and SciPy but is forbidden by test from
 importing `stableboundary`. Review and explicitly approve any new
-platform/architecture/NumPy/SciPy simulation key and its sample hash only after
-checking its counts and extrema before updating `scripts/artifact_oracle.json`;
-the smoke verifier intentionally rejects unmeasured combinations.
+platform/architecture/NumPy/SciPy simulation key and its normative quantized
+hash only after independent hosts agree and its counts, extrema, and summary
+diagnostics have been checked. Raw hashes remain audit observations. The smoke
+verifier intentionally rejects unmeasured combinations.
 
 ## Current limitations
 

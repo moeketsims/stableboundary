@@ -15,6 +15,7 @@ SAMPLE_SIZE = 5_000
 SEED = 20_260_824
 KNOWN_LOC = 0.0
 KNOWN_SCALE = 1.0
+QUANTIZATION_STEPS = {f"1e-{power}": 10.0 ** (-power) for power in range(10, 15)}
 
 
 def _canonical_f8(values: np.ndarray) -> bytes:
@@ -28,6 +29,28 @@ def _counts(values: np.ndarray, threshold: float) -> dict[str, int]:
         "n_minus": n_minus,
         "n_zero": int(values.size - n_minus - n_plus),
         "n_plus": n_plus,
+    }
+
+
+def _quantized_hashes(values: np.ndarray) -> dict[str, str]:
+    return {
+        name: hashlib.sha256(
+            np.ascontiguousarray(np.rint(values / step), dtype="<i8").tobytes(order="C")
+        ).hexdigest()
+        for name, step in QUANTIZATION_STEPS.items()
+    }
+
+
+def _diagnostics(values: np.ndarray) -> dict[str, float]:
+    quantiles = np.quantile(values, [0.01, 0.05, 0.5, 0.95, 0.99])
+    return {
+        "mean": float(np.mean(values)),
+        "standard_deviation": float(np.std(values)),
+        "q01": float(quantiles[0]),
+        "q05": float(quantiles[1]),
+        "median": float(quantiles[2]),
+        "q95": float(quantiles[3]),
+        "q99": float(quantiles[4]),
     }
 
 
@@ -97,9 +120,11 @@ def run_example() -> dict[str, Any]:
             "numpy_version": np.__version__,
             "scipy_version": audit["backend"]["library_version"],
             "sample_sha256": hashlib.sha256(simulation_bytes).hexdigest(),
+            "quantized_sample_sha256": _quantized_hashes(simulated),
             "counts": _counts(simulated, design.threshold),
             "minimum": float(np.min(simulated)),
             "maximum": float(np.max(simulated)),
+            "diagnostics": _diagnostics(simulated),
         },
         "design": audit["design"],
         "prior": audit["prior"],

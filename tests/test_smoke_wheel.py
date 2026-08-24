@@ -8,7 +8,6 @@ import csv
 import io
 import json
 import os
-import platform
 import stat
 import subprocess
 import sys
@@ -18,11 +17,8 @@ import zipfile
 from hashlib import sha256
 from pathlib import Path
 
-import numpy as np
 import pytest
-import scipy
 
-import stableboundary as sb
 from scripts import smoke_wheel
 
 
@@ -203,10 +199,14 @@ def _valid_payload() -> dict[str, object]:
             "python_version": "3.14.7",
             "numpy_version": "2.5.2",
             "scipy_version": "1.18.1",
-            "sample_sha256": environment["sample_sha256"],
+            "sample_sha256": environment["observed_raw_sha256"][0],
+            "quantized_sample_sha256": copy.deepcopy(
+                environment["quantized_sample_sha256"]
+            ),
             "counts": copy.deepcopy(environment["counts"]),
             "minimum": environment["minimum"],
             "maximum": environment["maximum"],
+            "diagnostics": copy.deepcopy(environment["observed_diagnostics"]),
         },
         "design": design,
         "prior": copy.deepcopy(oracle["prior"]),
@@ -704,47 +704,28 @@ def test_oracle_backed_payload_passes_full_scientific_validation() -> None:
 def test_source_tree_simulation_fingerprint_is_explicitly_approved() -> None:
     """Collect the live fingerprint in every ordinary dependency/OS CI job."""
     payload = _valid_payload()
-    design = sb.LocalDesign.from_sample_size(5_000)
-    truth = sb.StableParams(
-        alpha=2.0 - 1.5 * design.r,
-        beta=0.35,
-        loc=0.0,
-        scale=1.0,
+    python = Path(sys.executable)
+    public_probe = smoke_wheel._fresh_simulation_probe(
+        python,
+        cwd=smoke_wheel.REPOSITORY,
+        stage="fresh public source-tree simulation probe",
     )
-    seed = 20_260_824
-    simulated = sb.simulate(truth, size=5_000, random_state=seed)
-    sample_bytes = np.ascontiguousarray(simulated, dtype="<f8").tobytes(order="C")
-    n_minus = int(np.count_nonzero(simulated <= -design.threshold))
-    n_plus = int(np.count_nonzero(simulated >= design.threshold))
-    payload["simulation"] = {
-        "dtype": "<f8",
-        "rng_algorithm": (
-            f"numpy.random.{np.random.default_rng(seed).bit_generator.__class__.__name__}"
-        ),
-        "simulator_algorithm": "scipy.stats.levy_stable.rvs:S0:private-generator:v1",
-        "platform_system": platform.system(),
-        "platform_machine": platform.machine(),
-        "python_version": platform.python_version(),
-        "numpy_version": np.__version__,
-        "scipy_version": scipy.__version__,
-        "sample_sha256": sha256(sample_bytes).hexdigest(),
-        "counts": {
-            "n_minus": n_minus,
-            "n_zero": int(simulated.size - n_minus - n_plus),
-            "n_plus": n_plus,
-        },
-        "minimum": float(np.min(simulated)),
-        "maximum": float(np.max(simulated)),
-    }
+    independent_probe = smoke_wheel._fresh_simulation_probe(
+        python,
+        cwd=smoke_wheel.REPOSITORY,
+        stage="fresh independent source-tree simulation probe",
+    )
+    smoke_wheel._assert_simulation_probe_parity(public_probe, independent_probe)
+    payload["simulation"] = public_probe
     backend = payload["backend"]
     assert isinstance(backend, dict)
-    backend["library_version"] = scipy.__version__
+    backend["library_version"] = public_probe["scipy_version"]
     runtime_versions = {
-        "python": platform.python_version(),
-        "platform_system": platform.system(),
-        "platform_machine": platform.machine(),
-        "numpy": np.__version__,
-        "scipy": scipy.__version__,
+        "python": public_probe["python_version"],
+        "platform_system": public_probe["platform_system"],
+        "platform_machine": public_probe["platform_machine"],
+        "numpy": public_probe["numpy_version"],
+        "scipy": public_probe["scipy_version"],
     }
 
     smoke_wheel._validate_example(payload, runtime_versions=runtime_versions)
@@ -855,15 +836,19 @@ def test_simulation_mismatch_reports_complete_observed_fingerprint() -> None:
     payload = _valid_payload()
     simulation = payload["simulation"]
     assert isinstance(simulation, dict)
-    simulation["sample_sha256"] = "f" * 64
+    quantized = simulation["quantized_sample_sha256"]
+    assert isinstance(quantized, dict)
+    quantized["1e-14"] = "f" * 64
 
     with pytest.raises(RuntimeError, match="approved reference") as captured:
         smoke_wheel._validate_example(payload)
 
     message = str(captured.value)
     for required in (
-        '"sample_sha256": "ffffffff',
+        '"sample_sha256": "a39752ae',
+        '"1e-14": "ffffffff',
         '"counts": {',
+        '"diagnostics": {',
         '"minimum": -12.046204723023758',
         '"maximum": 9.384903377918656',
         '"system": "Windows"',
@@ -877,6 +862,27 @@ def test_simulation_mismatch_reports_complete_observed_fingerprint() -> None:
         '"truth": {',
     ):
         assert required in message
+
+
+def test_raw_sample_hash_is_diagnostic_not_a_portability_contract() -> None:
+    payload = _valid_payload()
+    simulation = payload["simulation"]
+    assert isinstance(simulation, dict)
+    simulation["sample_sha256"] = "0" * 64
+
+    smoke_wheel._validate_example(payload)
+
+
+def test_changed_simulation_summary_diagnostics_are_rejected() -> None:
+    payload = _valid_payload()
+    simulation = payload["simulation"]
+    assert isinstance(simulation, dict)
+    diagnostics = simulation["diagnostics"]
+    assert isinstance(diagnostics, dict)
+    diagnostics["mean"] = float(diagnostics["mean"]) + 1e-6
+
+    with pytest.raises(RuntimeError, match=r"diagnostics\[mean\]"):
+        smoke_wheel._validate_example(payload)
 
 
 def test_installed_payload_rejects_three_point_fake_simulator() -> None:
@@ -1259,6 +1265,23 @@ def test_public_example_must_match_independent_installed_estimator() -> None:
         smoke_wheel._assert_science_payload_parity(hardcoded, independent)
 
 
+def test_fresh_simulator_probe_disagreement_reports_both_observations() -> None:
+    payload = _valid_payload()
+    public = payload["simulation"]
+    assert isinstance(public, dict)
+    independent = copy.deepcopy(public)
+    independent["sample_sha256"] = "f" * 64
+
+    with pytest.raises(RuntimeError, match="different observations") as captured:
+        smoke_wheel._assert_simulation_probe_parity(public, independent)
+
+    message = str(captured.value)
+    assert "public=" in message
+    assert "independent=" in message
+    assert "a39752ae" in message
+    assert "ffffffff" in message
+
+
 def test_installed_estimator_cannot_hardcode_the_primary_posterior() -> None:
     primary = _valid_payload()
     counts = primary["counts"]
@@ -1305,16 +1328,29 @@ def test_independent_oracle_generator_never_imports_stableboundary() -> None:
     assert "stableboundary" not in imported_modules
 
 
-def test_oracle_approves_only_measured_numpy_scipy_combinations() -> None:
+def test_oracle_approves_only_measured_platform_dependency_combinations() -> None:
     document = json.loads(smoke_wheel.ORACLE.read_text(encoding="utf-8"))
-    approved = document["simulation_contract"]["approved_environments"]
+    contract = document["simulation_contract"]
+    approved = contract["approved_environments"]
 
+    assert contract["raw_hash_policy"] == "diagnostic_only"
+    assert contract["quantization_steps"] == [
+        "1e-10",
+        "1e-11",
+        "1e-12",
+        "1e-13",
+        "1e-14",
+    ]
     assert set(approved) == {
         "system=Windows|machine=AMD64|numpy=2.2.0|scipy=1.18.0",
         "system=Windows|machine=AMD64|numpy=2.2.0|scipy=1.18.1",
         "system=Windows|machine=AMD64|numpy=2.5.2|scipy=1.18.0",
         "system=Windows|machine=AMD64|numpy=2.5.2|scipy=1.18.1",
     }
+    assert all(
+        evidence["normative_quantization_step"] == "1e-14"
+        for evidence in approved.values()
+    )
 
 
 @pytest.mark.parametrize(

@@ -134,13 +134,42 @@
     "rng_algorithm": "numpy.random.PCG64",
     "simulator_algorithm": "scipy.stats.levy_stable.rvs:S0:private-generator:v1",
     "canonical_dtype": "<f8",
+    "raw_hash_policy": "diagnostic_only",
+    "quantization_algorithm": "rint(x/step)->canonical-<i8:v1",
+    "quantization_steps": [
+      "1e-10",
+      "1e-11",
+      "1e-12",
+      "1e-13",
+      "1e-14"
+    ],
+    "diagnostic_absolute_tolerance": 1e-12,
     "approved_environments": {
       "system=Windows|machine=AMD64|numpy=2.2.0|scipy=1.18.0": {
         "platform_system": "Windows",
         "platform_machine": "AMD64",
         "observed_python_version": "3.12.13",
         "dtype": "<f8",
-        "sample_sha256": "a39752ae90a9c69e8ff07982e47f8d191bc5ce8d776c7499c364abbcaeab74cb",
+        "observed_raw_sha256": [
+          "a39752ae90a9c69e8ff07982e47f8d191bc5ce8d776c7499c364abbcaeab74cb"
+        ],
+        "normative_quantization_step": "1e-14",
+        "quantized_sample_sha256": {
+          "1e-10": "f0f12fcfc3dbcc97950372b85934f5665988e66c7f84d2b0bc37e3628d1f19e5",
+          "1e-11": "0161f18ed1bb3e545ac0fe11627c86cb729c356d1e9f12c7d0d3d8e442a4989d",
+          "1e-12": "ef77eb05096ae0713fd78bc4691206a7a0efa40c48077773c0b57e570657c467",
+          "1e-13": "209d90bb6aa44d788d9a9a1d966487f47c32d4c7cf170b0c5cfd6e5c8dc76b06",
+          "1e-14": "a9d310b2f4d02422a1c88e4cb3aac6bff1f67ee9b9e28ee16c709cf81a07ba17"
+        },
+        "observed_diagnostics": {
+          "mean": 0.010765439647875782,
+          "standard_deviation": 1.4494747121510796,
+          "q01": -3.2879036179239907,
+          "q05": -2.3076523039789576,
+          "median": -0.010232759023171686,
+          "q95": 2.3650772908920477,
+          "q99": 3.41823489323467
+        },
       "counts": {
         "n_minus": 1,
         "n_zero": 4996,
@@ -154,7 +183,26 @@
         "platform_machine": "AMD64",
         "observed_python_version": "3.12.13",
         "dtype": "<f8",
-        "sample_sha256": "a39752ae90a9c69e8ff07982e47f8d191bc5ce8d776c7499c364abbcaeab74cb",
+        "observed_raw_sha256": [
+          "a39752ae90a9c69e8ff07982e47f8d191bc5ce8d776c7499c364abbcaeab74cb"
+        ],
+        "normative_quantization_step": "1e-14",
+        "quantized_sample_sha256": {
+          "1e-10": "f0f12fcfc3dbcc97950372b85934f5665988e66c7f84d2b0bc37e3628d1f19e5",
+          "1e-11": "0161f18ed1bb3e545ac0fe11627c86cb729c356d1e9f12c7d0d3d8e442a4989d",
+          "1e-12": "ef77eb05096ae0713fd78bc4691206a7a0efa40c48077773c0b57e570657c467",
+          "1e-13": "209d90bb6aa44d788d9a9a1d966487f47c32d4c7cf170b0c5cfd6e5c8dc76b06",
+          "1e-14": "a9d310b2f4d02422a1c88e4cb3aac6bff1f67ee9b9e28ee16c709cf81a07ba17"
+        },
+        "observed_diagnostics": {
+          "mean": 0.010765439647875782,
+          "standard_deviation": 1.4494747121510796,
+          "q01": -3.2879036179239907,
+          "q05": -2.3076523039789576,
+          "median": -0.010232759023171686,
+          "q95": 2.3650772908920477,
+          "q99": 3.41823489323467
+        },
         "counts": {
           "n_minus": 1,
           "n_zero": 4996,
@@ -168,7 +216,26 @@
         "platform_machine": "AMD64",
         "observed_python_version": "3.13.14",
         "dtype": "<f8",
-        "sample_sha256": "a39752ae90a9c69e8ff07982e47f8d191bc5ce8d776c7499c364abbcaeab74cb",
+        "observed_raw_sha256": [
+          "a39752ae90a9c69e8ff07982e47f8d191bc5ce8d776c7499c364abbcaeab74cb"
+        ],
+        "normative_quantization_step": "1e-14",
+        "quantized_sample_sha256": {
+          "1e-10": "f0f12fcfc3dbcc97950372b85934f5665988e66c7f84d2b0bc37e3628d1f19e5",
+          "1e-11": "0161f18ed1bb3e545ac0fe11627c86cb729c356d1e9f12c7d0d3d8e442a4989d",
+          "1e-12": "ef77eb05096ae0713fd78bc4691206a7a0efa40c48077773c0b57e570657c467",
+          "1e-13": "209d90bb6aa44d788d9a9a1d966487f47c32d4c7cf170b0c5cfd6e5c8dc76b06",
+          "1e-14": "a9d310b2f4d02422a1c88e4cb3aac6bff1f67ee9b9e28ee16c709cf81a07ba17"
+        },
+        "observed_diagnostics": {
+          "mean": 0.010765439647875782,
+          "standard_deviation": 1.4494747121510796,
+          "q01": -3.2879036179239907,
+          "q05": -2.3076523039789576,
+          "median": -0.010232759023171686,
+          "q95": 2.3650772908920477,
+          "q99": 3.41823489323467
+        },
         "counts": {
           "n_minus": 1,
           "n_zero": 4996,
@@ -182,7 +249,26 @@
         "platform_machine": "AMD64",
         "observed_python_version": "3.14.7",
         "dtype": "<f8",
-      "sample_sha256": "a39752ae90a9c69e8ff07982e47f8d191bc5ce8d776c7499c364abbcaeab74cb",
+        "observed_raw_sha256": [
+          "a39752ae90a9c69e8ff07982e47f8d191bc5ce8d776c7499c364abbcaeab74cb"
+        ],
+        "normative_quantization_step": "1e-14",
+        "quantized_sample_sha256": {
+          "1e-10": "f0f12fcfc3dbcc97950372b85934f5665988e66c7f84d2b0bc37e3628d1f19e5",
+          "1e-11": "0161f18ed1bb3e545ac0fe11627c86cb729c356d1e9f12c7d0d3d8e442a4989d",
+          "1e-12": "ef77eb05096ae0713fd78bc4691206a7a0efa40c48077773c0b57e570657c467",
+          "1e-13": "209d90bb6aa44d788d9a9a1d966487f47c32d4c7cf170b0c5cfd6e5c8dc76b06",
+          "1e-14": "a9d310b2f4d02422a1c88e4cb3aac6bff1f67ee9b9e28ee16c709cf81a07ba17"
+        },
+        "observed_diagnostics": {
+          "mean": 0.010765439647875782,
+          "standard_deviation": 1.4494747121510796,
+          "q01": -3.2879036179239907,
+          "q05": -2.3076523039789576,
+          "median": -0.010232759023171686,
+          "q95": 2.3650772908920477,
+          "q99": 3.41823489323467
+        },
       "counts": {
         "n_minus": 1,
         "n_zero": 4996,

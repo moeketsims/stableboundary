@@ -1120,6 +1120,14 @@ reflected_summary = reflected_fit.summary()
 reflected_audit = reflected_fit.audit_record()
 simulated = sb.simulate(truth, size=n, random_state=seed)
 simulation_bytes = np.ascontiguousarray(simulated, dtype="<f8").tobytes(order="C")
+quantization_steps = {f"1e-{power}": 10.0**(-power) for power in range(10, 15)}
+quantized_hashes = {
+    name: hashlib.sha256(
+        np.ascontiguousarray(np.rint(simulated / step), dtype="<i8").tobytes(order="C")
+    ).hexdigest()
+    for name, step in quantization_steps.items()
+}
+diagnostic_quantiles = np.quantile(simulated, [0.01, 0.05, 0.5, 0.95, 0.99])
 n_minus = int(np.count_nonzero(simulated <= -design.threshold))
 n_plus = int(np.count_nonzero(simulated >= design.threshold))
 payload = {
@@ -1155,6 +1163,7 @@ payload = {
         "numpy_version": np.__version__,
         "scipy_version": audit["backend"]["library_version"],
         "sample_sha256": hashlib.sha256(simulation_bytes).hexdigest(),
+        "quantized_sample_sha256": quantized_hashes,
         "counts": {
             "n_minus": n_minus,
             "n_zero": int(n - n_minus - n_plus),
@@ -1162,6 +1171,15 @@ payload = {
         },
         "minimum": float(np.min(simulated)),
         "maximum": float(np.max(simulated)),
+        "diagnostics": {
+            "mean": float(np.mean(simulated)),
+            "standard_deviation": float(np.std(simulated)),
+            "q01": float(diagnostic_quantiles[0]),
+            "q05": float(diagnostic_quantiles[1]),
+            "median": float(diagnostic_quantiles[2]),
+            "q95": float(diagnostic_quantiles[3]),
+            "q99": float(diagnostic_quantiles[4]),
+        },
     },
     "design": audit["design"],
     "prior": audit["prior"],
@@ -1200,6 +1218,93 @@ print(json.dumps({
     if not isinstance(decoded, dict):
         raise RuntimeError("independent installed science probe returned invalid JSON")
     return decoded
+
+
+def _fresh_simulation_probe(python: Path, *, cwd: Path, stage: str) -> dict[str, Any]:
+    """Run one simulator observation in an isolated interpreter process."""
+    source = r"""
+import hashlib
+import json
+import platform
+
+import numpy as np
+import scipy
+import stableboundary as sb
+
+n = 5000
+seed = 20260824
+design = sb.LocalDesign.from_sample_size(n)
+truth = sb.StableParams(alpha=2.0-design.r*1.5, beta=0.35, loc=0.0, scale=1.0)
+simulated = sb.simulate(truth, size=n, random_state=seed)
+raw = np.ascontiguousarray(simulated, dtype="<f8").tobytes(order="C")
+steps = {f"1e-{power}": 10.0**(-power) for power in range(10, 15)}
+quantized = {
+    name: hashlib.sha256(
+        np.ascontiguousarray(np.rint(simulated / step), dtype="<i8").tobytes(order="C")
+    ).hexdigest()
+    for name, step in steps.items()
+}
+quantiles = np.quantile(simulated, [0.01, 0.05, 0.5, 0.95, 0.99])
+n_minus = int(np.count_nonzero(simulated <= -design.threshold))
+n_plus = int(np.count_nonzero(simulated >= design.threshold))
+print(json.dumps({
+    "dtype": "<f8",
+    "rng_algorithm": (
+        "numpy.random."
+        f"{np.random.default_rng(seed).bit_generator.__class__.__name__}"
+    ),
+    "simulator_algorithm": "scipy.stats.levy_stable.rvs:S0:private-generator:v1",
+    "platform_system": platform.system(),
+    "platform_machine": platform.machine(),
+    "python_version": platform.python_version(),
+    "numpy_version": np.__version__,
+    "scipy_version": scipy.__version__,
+    "sample_sha256": hashlib.sha256(raw).hexdigest(),
+    "quantized_sample_sha256": quantized,
+    "counts": {
+        "n_minus": n_minus,
+        "n_zero": int(n - n_minus - n_plus),
+        "n_plus": n_plus,
+    },
+    "minimum": float(np.min(simulated)),
+    "maximum": float(np.max(simulated)),
+    "diagnostics": {
+        "mean": float(np.mean(simulated)),
+        "standard_deviation": float(np.std(simulated)),
+        "q01": float(quantiles[0]),
+        "q05": float(quantiles[1]),
+        "median": float(quantiles[2]),
+        "q95": float(quantiles[3]),
+        "q99": float(quantiles[4]),
+    },
+}, sort_keys=True, allow_nan=False))
+"""
+    decoded = json.loads(
+        _run(
+            [str(python), "-I", "-c", source],
+            cwd=cwd,
+            stage=stage,
+            timeout_seconds=IMPORT_TIMEOUT_SECONDS,
+            capture=True,
+        )
+    )
+    if not isinstance(decoded, dict):
+        raise RuntimeError(f"{stage} returned invalid JSON")
+    return decoded
+
+
+def _assert_simulation_probe_parity(
+    public_probe: dict[str, Any], independent_probe: dict[str, Any]
+) -> None:
+    if public_probe != independent_probe:
+        public_json = json.dumps(public_probe, sort_keys=True, allow_nan=False)
+        independent_json = json.dumps(
+            independent_probe, sort_keys=True, allow_nan=False
+        )
+        raise RuntimeError(
+            "fresh simulator subprocesses produced different observations; "
+            f"public={public_json}; independent={independent_json}"
+        )
 
 
 def _independent_fixture_identity(threshold: float) -> dict[str, object]:
@@ -1798,9 +1903,11 @@ def _validate_example(
             "numpy_version",
             "scipy_version",
             "sample_sha256",
+            "quantized_sample_sha256",
             "counts",
             "minimum",
             "maximum",
+            "diagnostics",
         },
     )
     contract = _require_keys(
@@ -1813,9 +1920,41 @@ def _validate_example(
             "rng_algorithm",
             "simulator_algorithm",
             "canonical_dtype",
+            "raw_hash_policy",
+            "quantization_algorithm",
+            "quantization_steps",
+            "diagnostic_absolute_tolerance",
             "approved_environments",
         },
     )
+    if (
+        contract["raw_hash_policy"] != "diagnostic_only"
+        or contract["quantization_algorithm"] != "rint(x/step)->canonical-<i8:v1"
+        or contract["quantization_steps"]
+        != ["1e-10", "1e-11", "1e-12", "1e-13", "1e-14"]
+        or contract["diagnostic_absolute_tolerance"] != 1e-12
+    ):
+        raise RuntimeError("artifact oracle changed the sample quantization contract")
+    quantization_steps = contract["quantization_steps"]
+    quantized_hashes = _require_keys(
+        "quantized simulation hashes",
+        simulation["quantized_sample_sha256"],
+        set(quantization_steps),
+    )
+    for step, digest in quantized_hashes.items():
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise RuntimeError(
+                f"installed simulation returned invalid quantized hash for {step}"
+            )
+    diagnostics = _require_keys(
+        "simulation diagnostics",
+        simulation["diagnostics"],
+        {"mean", "standard_deviation", "q01", "q05", "median", "q95", "q99"},
+    )
+    validated_diagnostics = {
+        name: _finite_float(f"simulation diagnostic {name}", value)
+        for name, value in diagnostics.items()
+    }
     simulation_counts = _require_keys(
         "simulation cell counts",
         simulation["counts"],
@@ -1841,6 +1980,8 @@ def _validate_example(
     for name in text_fields:
         if not isinstance(simulation[name], str) or not simulation[name].strip():
             raise RuntimeError(f"installed simulation returned invalid {name}")
+    if re.fullmatch(r"[0-9a-f]{64}", simulation["sample_sha256"]) is None:
+        raise RuntimeError("installed simulation returned invalid raw sample hash")
     fingerprint: dict[str, object] = {
         "seed": payload["seed"],
         "truth": truth,
@@ -1848,9 +1989,11 @@ def _validate_example(
         "rng_algorithm": simulation["rng_algorithm"],
         "simulator_algorithm": simulation["simulator_algorithm"],
         "sample_sha256": simulation["sample_sha256"],
+        "quantized_sample_sha256": quantized_hashes,
         "counts": validated_simulation_counts,
         "minimum": minimum,
         "maximum": maximum,
+        "diagnostics": validated_diagnostics,
         "platform": {
             "system": simulation["platform_system"],
             "machine": simulation["platform_machine"],
@@ -1911,12 +2054,48 @@ def _validate_example(
             "platform_machine",
             "observed_python_version",
             "dtype",
-            "sample_sha256",
+            "observed_raw_sha256",
+            "normative_quantization_step",
+            "quantized_sample_sha256",
+            "observed_diagnostics",
             "counts",
             "minimum",
             "maximum",
         },
     )
+    observed_raw_hashes = expected_simulation_values["observed_raw_sha256"]
+    if (
+        not isinstance(observed_raw_hashes, list)
+        or not observed_raw_hashes
+        or any(
+            not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            for digest in observed_raw_hashes
+        )
+    ):
+        raise RuntimeError("artifact oracle has invalid observed raw sample hashes")
+    expected_quantized_hashes = _require_keys(
+        "approved quantized simulation hashes",
+        expected_simulation_values["quantized_sample_sha256"],
+        set(quantization_steps),
+    )
+    for step, digest in expected_quantized_hashes.items():
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise RuntimeError(
+                f"artifact oracle has invalid approved quantized hash for {step}"
+            )
+    normative_step = expected_simulation_values["normative_quantization_step"]
+    if not isinstance(normative_step, str) or normative_step not in quantization_steps:
+        raise RuntimeError("artifact oracle has invalid normative quantization step")
+    observed_diagnostics = _require_keys(
+        "approved observed simulation diagnostics",
+        expected_simulation_values["observed_diagnostics"],
+        set(validated_diagnostics),
+    )
+    for name, value in observed_diagnostics.items():
+        _finite_float(f"oracle observed simulation diagnostic {name}", value)
+    observed_python_version = expected_simulation_values["observed_python_version"]
+    if not isinstance(observed_python_version, str) or not observed_python_version:
+        raise RuntimeError("artifact oracle has invalid observed Python version")
     mismatches = {
         "platform_system": (
             platform_system,
@@ -1927,9 +2106,9 @@ def _validate_example(
             expected_simulation_values["platform_machine"],
         ),
         "dtype": (simulation["dtype"], expected_simulation_values["dtype"]),
-        "sample_sha256": (
-            simulation["sample_sha256"],
-            expected_simulation_values["sample_sha256"],
+        f"quantized_sample_sha256[{normative_step}]": (
+            quantized_hashes[normative_step],
+            expected_quantized_hashes[normative_step],
         ),
         "counts": (
             validated_simulation_counts,
@@ -1941,6 +2120,24 @@ def _validate_example(
     changed = sorted(
         name for name, (actual, expected) in mismatches.items() if actual != expected
     )
+    diagnostic_tolerance = _finite_float(
+        "oracle simulation diagnostic tolerance",
+        contract["diagnostic_absolute_tolerance"],
+    )
+    changed.extend(
+        f"diagnostics[{name}]"
+        for name, actual in validated_diagnostics.items()
+        if not math.isclose(
+            actual,
+            _finite_float(
+                f"oracle observed simulation diagnostic {name}",
+                observed_diagnostics[name],
+            ),
+            rel_tol=0.0,
+            abs_tol=diagnostic_tolerance,
+        )
+    )
+    changed.sort()
     if changed:
         raise _simulation_failure(
             "installed simulation differs from its approved reference in "
