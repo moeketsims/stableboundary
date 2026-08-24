@@ -83,17 +83,6 @@ def _threshold(value: float) -> float:
     return result
 
 
-def _weighted_quantile(
-    values: NDArray[np.float64],
-    mass: NDArray[np.float64],
-    probability: float,
-) -> float:
-    order = np.argsort(values.ravel(), kind="stable")
-    ordered_values = values.ravel()[order]
-    cumulative = np.cumsum(mass.ravel()[order])
-    return float(np.interp(probability, cumulative, ordered_values))
-
-
 @dataclass(frozen=True, slots=True)
 class CredibleInterval:
     """Equal-tail posterior interval with its retained probability mass."""
@@ -345,17 +334,14 @@ class KnownNuisanceFit:
         )
 
     def parameter_summary(self, quantity: str) -> ParameterSummary:
-        values = self.posterior.values(quantity)
-        mass = self.posterior.mass
-        interval_mass = self.posterior.interval_mass
-        tail = 0.5 * (1.0 - interval_mass)
+        retained = self.posterior.summary_record(quantity)
         return ParameterSummary(
-            mean=float(np.sum(mass * values)),
-            median=_weighted_quantile(values, mass, 0.5),
+            mean=retained.mean,
+            median=retained.median,
             credible_interval=CredibleInterval(
-                lower=_weighted_quantile(values, mass, tail),
-                upper=_weighted_quantile(values, mass, 1.0 - tail),
-                mass=interval_mass,
+                lower=retained.interval_lower,
+                upper=retained.interval_upper,
+                mass=self.posterior.interval_mass,
             ),
         )
 
@@ -477,6 +463,7 @@ class KnownNuisanceFit:
                 "summary_changes": {
                     item.quantity: {
                         "mean": item.mean,
+                        "median": item.median,
                         "interval_lower": item.interval_lower,
                         "interval_upper": item.interval_upper,
                     }
