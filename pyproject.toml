@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling>=1.32,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "stableboundary"
+version = "0.1.0"
+description = "Auditable Bayesian inference for alpha-stable laws near the Gaussian boundary"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Moeketsi Mosia" },
+]
+dependencies = [
+  "numpy>=2.2",
+  "scipy>=1.18",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.5,<2",
+  "check-wheel-contents>=0.6.3,<1",
+  "coverage>=7.15,<8",
+  "hypothesis>=6.161",
+  "mypy>=2.3,<3",
+  "pytest>=9.1,<10",
+  "ruff>=0.16,<0.17",
+  "twine>=7,<8",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/LICENSE",
+  "/pyproject.toml",
+  "/src/stableboundary",
+  "/tests",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stableboundary"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers"
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+  "installed: tests that build or exercise an installed distribution",
+  "slow: tests excluded from the ordinary fast feedback loop",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+files = ["src/stableboundary"]
+
+[tool.coverage.run]
+branch = true
+source = ["stableboundary"]
