@@ -1381,6 +1381,54 @@ def _validate_installed_runtime(
     return versions
 
 
+def _check_prove_and_probe_installed_runtime(
+    python: Path,
+    *,
+    cwd: Path,
+    source_artifact: Path,
+    wheel_snapshot: ArtifactSnapshot,
+    environment: Path,
+    inspection: ArchiveInspection,
+    before: TreeInventory,
+) -> tuple[InstalledDistribution, dict[str, Any]]:
+    """Finish child setup, prove raw bytes, import, then prove them again."""
+    _run(
+        [
+            str(python),
+            "-m",
+            "pip",
+            "--isolated",
+            "--no-input",
+            "check",
+            "--disable-pip-version-check",
+        ],
+        cwd=cwd,
+        stage=f"dependency check for {source_artifact.name}",
+        timeout_seconds=IMPORT_TIMEOUT_SECONDS,
+    )
+    installed = _validate_installed_distribution(
+        artifact=wheel_snapshot.path,
+        environment=environment,
+        expected_digest=wheel_snapshot.sha256,
+        inspection=inspection,
+        before=before,
+    )
+    probe = _installed_probe(
+        python,
+        cwd=cwd,
+        artifact=wheel_snapshot.path,
+        installed=installed,
+    )
+    _validate_installed_distribution(
+        artifact=wheel_snapshot.path,
+        environment=environment,
+        expected_digest=wheel_snapshot.sha256,
+        inspection=inspection,
+        before=before,
+    )
+    return installed, probe
+
+
 def _oracle_document() -> dict[str, Any]:
     try:
         decoded = json.loads(_repository_file(ORACLE))
@@ -3302,32 +3350,14 @@ def _exercise_archive(
             wheel_source, expected_digest=wheel_inspection.wheel_sha256
         ) as wheel_snapshot:
             _install_verified_wheel(python, wheel_snapshot, cwd=work)
-            installed = _validate_installed_distribution(
-                artifact=wheel_snapshot.path,
-                environment=environment,
-                expected_digest=wheel_snapshot.sha256,
-                inspection=wheel_inspection,
-                before=before,
-            )
-            _run(
-                [
-                    str(python),
-                    "-m",
-                    "pip",
-                    "--isolated",
-                    "--no-input",
-                    "check",
-                    "--disable-pip-version-check",
-                ],
-                cwd=work,
-                stage=f"post-proof dependency check for {source_artifact.name}",
-                timeout_seconds=IMPORT_TIMEOUT_SECONDS,
-            )
-            probe = _installed_probe(
+            installed, probe = _check_prove_and_probe_installed_runtime(
                 python,
                 cwd=work,
-                artifact=wheel_snapshot.path,
-                installed=installed,
+                source_artifact=source_artifact,
+                wheel_snapshot=wheel_snapshot,
+                environment=environment,
+                inspection=wheel_inspection,
+                before=before,
             )
             versions = _validate_installed_runtime(
                 probe, installed=installed, artifact=wheel_snapshot.path

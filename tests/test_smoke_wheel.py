@@ -1883,6 +1883,89 @@ def test_raw_installed_distribution_is_authenticated_before_import(
     assert installed.site_packages == _test_site_packages(environment).resolve()
 
 
+def _test_artifact_snapshot(path: Path, digest: str) -> smoke_wheel.ArtifactSnapshot:
+    return smoke_wheel.ArtifactSnapshot(
+        source_name=smoke_wheel.EXPECTED_WHEEL,
+        path=path,
+        size=path.stat().st_size,
+        sha256=digest,
+    )
+
+
+def test_dependency_check_mutation_fails_before_first_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environment, site, artifact, digest, inspection, before = _materialize_raw_install(
+        tmp_path
+    )
+    marker = tmp_path / "import-executed.txt"
+    import_called = False
+
+    def mutate_during_check(command: list[str], **kwargs: object) -> str:
+        del command, kwargs
+        (site / "stableboundary" / "__init__.py").write_text(
+            "substituted = True\n", encoding="utf-8"
+        )
+        return ""
+
+    def attempted_import(*args: object, **kwargs: object) -> dict[str, object]:
+        nonlocal import_called
+        del args, kwargs
+        import_called = True
+        marker.write_text("executed", encoding="utf-8")
+        return {}
+
+    monkeypatch.setattr(smoke_wheel, "_run", mutate_during_check)
+    monkeypatch.setattr(smoke_wheel, "_installed_probe", attempted_import)
+
+    with pytest.raises(RuntimeError, match="differs from inspected wheel"):
+        smoke_wheel._check_prove_and_probe_installed_runtime(
+            Path("python"),
+            cwd=tmp_path,
+            source_artifact=artifact,
+            wheel_snapshot=_test_artifact_snapshot(artifact, digest),
+            environment=environment,
+            inspection=inspection,
+            before=before,
+        )
+
+    assert not import_called
+    assert not marker.exists()
+
+
+def test_runtime_mutation_is_rejected_by_post_import_raw_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environment, site, artifact, digest, inspection, before = _materialize_raw_install(
+        tmp_path
+    )
+
+    def no_op(command: list[str], **kwargs: object) -> str:
+        del command, kwargs
+        return ""
+
+    def mutate_during_import(*args: object, **kwargs: object) -> dict[str, object]:
+        del args, kwargs
+        (site / "stableboundary" / "__init__.py").write_text(
+            "mutated_during_import = True\n", encoding="utf-8"
+        )
+        return {}
+
+    monkeypatch.setattr(smoke_wheel, "_run", no_op)
+    monkeypatch.setattr(smoke_wheel, "_installed_probe", mutate_during_import)
+
+    with pytest.raises(RuntimeError, match="differs from inspected wheel"):
+        smoke_wheel._check_prove_and_probe_installed_runtime(
+            Path("python"),
+            cwd=tmp_path,
+            source_artifact=artifact,
+            wheel_snapshot=_test_artifact_snapshot(artifact, digest),
+            environment=environment,
+            inspection=inspection,
+            before=before,
+        )
+
+
 def test_hostile_package_code_cannot_execute_before_raw_validation(
     tmp_path: Path,
 ) -> None:
