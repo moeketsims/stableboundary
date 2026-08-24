@@ -168,9 +168,7 @@ class ScipyS0Backend:
             raise NumericalProbabilityError(
                 f"SciPy stable {operation} returned nonfinite output ({context})"
             )
-        if operation in {"cdf", "sf"} and np.any(
-            (values < 0.0) | (values > 1.0)
-        ):
+        if operation in {"cdf", "sf"} and np.any((values < 0.0) | (values > 1.0)):
             raise NumericalProbabilityError(
                 f"SciPy stable {operation} returned values outside [0, 1] ({context})"
             )

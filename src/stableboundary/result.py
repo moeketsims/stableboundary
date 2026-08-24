@@ -544,9 +544,7 @@ class KnownNuisanceFit:
             backend_method=backend.metadata.method,
         )
 
-    def posterior_tail_probabilities(
-        self, threshold: float
-    ) -> SignedTailPrediction:
+    def posterior_tail_probabilities(self, threshold: float) -> SignedTailPrediction:
         """Alias emphasizing that signed raw-tail probabilities are mixtures."""
         return self.tail_probabilities(threshold)
 

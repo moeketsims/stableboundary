@@ -164,9 +164,7 @@ def test_positive_tail_backend_uses_direct_reflected_cdf(
 
     monkeypatch.setattr(levy_stable, "cdf", direct_cdf)
     monkeypatch.setattr(levy_stable, "sf", forbidden_sf)
-    result = getattr(backend, method_name)(
-        3.0, 1.8, 0.2, loc=0.5, scale=2.0
-    )
+    result = getattr(backend, method_name)(3.0, 1.8, 0.2, loc=0.5, scale=2.0)
     assert np.isfinite(result)
     assert len(calls) == 1
     x, alpha, beta, kwargs = calls[0]
@@ -305,9 +303,13 @@ def test_exact_cells_use_direct_log_tails_and_standardized_s0(
     negative_call, positive_call = backend.calls
     assert negative_call[1] == -local_design.threshold
     assert positive_call[1] == local_design.threshold
-    assert negative_call[2:4] == positive_call[2:4] == (
-        local.alpha,
-        local.beta,
+    assert (
+        negative_call[2:4]
+        == positive_call[2:4]
+        == (
+            local.alpha,
+            local.beta,
+        )
     )
     assert negative_call[4:] == positive_call[4:] == (0.0, 1.0)
     assert probabilities.q_minus == pytest.approx(np.exp(-4.0))
