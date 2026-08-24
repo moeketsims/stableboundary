@@ -2,116 +2,153 @@
 phase: 01-working-theorem-faithful-package
 status: issues_found
 depth: standard
-files_reviewed: 30
+iteration: 2
+reviewed_head: 1bdb863
+files_reviewed: 23
 files_reviewed_list:
-  - .github/workflows/ci.yml
-  - README.md
-  - pyproject.toml
-  - examples/known_nuisance_fit.py
-  - scripts/smoke_wheel.py
-  - src/stableboundary/__init__.py
-  - src/stableboundary/_exceptions.py
   - src/stableboundary/api.py
   - src/stableboundary/approximation.py
-  - src/stableboundary/backends/__init__.py
   - src/stableboundary/backends/_protocol.py
   - src/stableboundary/backends/_scipy_s0.py
   - src/stableboundary/cells.py
   - src/stableboundary/design.py
-  - src/stableboundary/parameters.py
   - src/stableboundary/posterior.py
   - src/stableboundary/result.py
-  - src/stableboundary/simulation.py
-  - tests/conftest.py
+  - scripts/smoke_wheel.py
+  - examples/known_nuisance_fit.py
   - tests/test_approximation.py
-  - tests/test_design.py
   - tests/test_fit_known.py
-  - tests/test_identification.py
-  - tests/test_installed_package.py
-  - tests/test_parameters.py
   - tests/test_prediction.py
   - tests/test_probabilities.py
-  - tests/test_public_api.py
-  - tests/test_simulation.py
-  - src/stableboundary/py.typed
+  - tests/test_smoke_wheel.py
+  - tests/test_installed_package.py
+  - README.md
+  - pyproject.toml
+  - .github/workflows/ci.yml
+  - AGENTS.md
+  - .planning/research/STACK.md
+  - .planning/phases/01-working-theorem-faithful-package/01-REVIEW-FIX.md
+  - uv.lock
 findings:
-  critical: 5
-  warning: 5
-  info: 0
-  total: 10
+  critical: 7
+  warning: 9
+  info: 1
+  total: 17
 reviewed: 2026-08-24
 ---
 
-# Phase 01 Code Review
+# Phase 01 Code Re-review — Iteration 2
 
 ## Verdict
 
-The package is not ready for the Phase 01 verification gate. The implementation is coherent and its existing tests pass, but the adversarial numerical and package reviews identified five correctness or safety blockers and five reliability defects. All ten findings are in scope for repair before the next push.
+The first repair cycle fixed its ten recorded findings, but three independent adversarial reviewers found seven new correctness or proof-of-work blockers and nine warnings at head 1bdb863. PR #1 must remain a draft. The original review is preserved in 01-REVIEW.iter2.md, and its fix accounting remains in 01-REVIEW-FIX.md.
 
 ## Critical findings
 
-### CR-01: Posterior quantiles treat quadrature masses as pointwise CDF values
+### CR-01: Exact posterior accepts counts from a different experiment
 
-- **Files:** `src/stableboundary/posterior.py`, `src/stableboundary/result.py`
-- **Evidence:** Marginal quantiles are obtained by applying `numpy.interp` directly to cumulative Gauss-node weights. Gaussian quadrature weights represent integrated cell mass, not CDF values located at the nodes. Even a uniform posterior therefore exhibits a half-cell displacement. The refinement test compares the same biased construction at two resolutions and can certify the wrong summaries.
-- **Required fix:** Construct marginal continuous CDFs on supports that include their endpoints, integrate normalized marginal densities, invert those CDFs for all reported quantiles, and make convergence checks assess the exact summaries returned to users. Add a no-data/uniform-posterior regression test with analytically known median and interval endpoints.
+- **Files:** src/stableboundary/cells.py, src/stableboundary/posterior.py
+- **Evidence:** Valid CellCounts produced under one LocalDesign were accepted with another design of the same n but a different c and threshold. The likelihood was silently evaluated at the second threshold.
+- **Required fix:** Bind counts to immutable full design and nuisance provenance and reject any mismatch before backend evaluation.
 
-### CR-02: Structurally compatible non-S0 backends are silently accepted
+### CR-02: Public fit composition can produce a false audit record
 
-- **Files:** `src/stableboundary/cells.py`, `src/stableboundary/posterior.py`, `src/stableboundary/result.py`
-- **Evidence:** Backend calls are accepted through the protocol without checking `metadata.parameterization`. Result audit metadata then reports `S0` unconditionally. An S1 backend can consequently be used while the public result claims S0 semantics.
-- **Required fix:** Validate S0 parameterization at every public inference/probability boundary, preserve the actual validated backend metadata in results, and add rejection tests for an otherwise conforming S1 test double.
+- **Files:** src/stableboundary/posterior.py, src/stableboundary/result.py, src/stableboundary/api.py
+- **Evidence:** A posterior computed under one compact prior can be paired with KnownNuisanceFit carrying a different prior; the audit then reports the false prior. Counts can likewise be paired with different nuisance provenance.
+- **Required fix:** Retain full counts/design/prior provenance in PosteriorGrid and make fit construction package-controlled with exact component equality checks.
 
-### CR-03: Ambient SciPy settings can alter supposedly canonical inference
+### CR-03: Limiting-approximation quantiles repeat the Gauss-mass CDF error
 
-- **File:** `src/stableboundary/backends/_scipy_s0.py`
-- **Evidence:** The configuration context snapshots and restores some SciPy settings but does not force and record every result-affecting piecewise tolerance/method setting. Prior mutations of the public SciPy singleton can change computed probabilities while package metadata continues to report package defaults.
-- **Required fix:** Use a fully configured package-owned stable-distribution generator, explicitly set all result-affecting options, record their effective values, and test that hostile ambient SciPy settings do not change package output.
+- **File:** src/stableboundary/approximation.py
+- **Evidence:** For a limiting Uniform[0.05, 0.95] p posterior, expected (q05, median, q95) is (0.095, 0.5, 0.905), while the public result returns (0.0943427141, 0.4926754648, 0.9056572859).
+- **Required fix:** Use continuous truncated Gamma/Beta inversion, exact monotone transforms, and continuous product-distribution integration for tau_plus and tau_minus, with analytic regressions.
 
-### CR-04: A package-private lock does not isolate SciPy process-global mutation
+### CR-04: Windows path canonicalization bypasses artifact leakage checks
 
-- **File:** `src/stableboundary/backends/_scipy_s0.py`
-- **Evidence:** The lock coordinates only calls made through `stableboundary`. Direct concurrent use of `scipy.stats.levy_stable` can observe temporary package mutations or race with them.
-- **Required fix:** Stop mutating SciPy's public singleton. Configure and guard a package-owned generator instance (or an equivalently isolated implementation), and test that the public SciPy singleton remains unchanged during package calls.
+- **Files:** scripts/smoke_wheel.py, tests/test_smoke_wheel.py
+- **Evidence:** tests./payload.py and paper.tex. pass lexical inspection but extract on Windows as tests/payload.py and paper.tex. Reserved devices and alternate-data-stream names also reach pip.
+- **Required fix:** Reject trailing dot/space, colon/control characters, reserved basenames, noncanonical components/separators, and portable canonical collisions for members and link targets; add extraction regressions.
 
-### CR-05: Artifact inspection can normalize unsafe archive members into safe-looking paths
+### CR-05: The artifact smoke can install and test the wrong distribution
 
-- **File:** `scripts/smoke_wheel.py`
-- **Evidence:** Member paths are normalized with `lstrip("./")`, which erases absolute or traversal prefixes before validation. Tar symbolic- and hard-link targets are not validated. A malicious path such as `../../payload.py` can therefore become `payload.py` and the artifact may subsequently be passed to `pip`.
-- **Required fix:** Reject absolute paths, parent traversal, drive-qualified paths, and unsafe tar link targets before installation. Add hostile wheel/sdist member tests.
+- **File:** scripts/smoke_wheel.py
+- **Evidence:** Fabricated evil-9 wheel and sdist archives with Name: evil passed discovery and inspection. A transitive dependency named stableboundary can also satisfy the origin check.
+- **Required fix:** Validate canonical filenames plus embedded wheel METADATA and sdist PKG-INFO name/version, install dependencies separately then the exact artifact with --no-deps, and validate installed version/direct_url against that artifact.
+
+### CR-06: Installed proof ignores required fixed-example evidence
+
+- **Files:** scripts/smoke_wheel.py, examples/known_nuisance_fit.py, tests/test_smoke_wheel.py
+- **Evidence:** Payloads without seed, truth, design, identification, or warnings pass, as does n=10 instead of the fixed n=5000 proof case.
+- **Required fix:** Require and validate the complete fixed design/truth/identification/warning schema, exact seed and sample size, strict prior-induced parameter domains, and common 0.90 credible mass; compare wheel and sdist evidence.
+
+### CR-07: converged=true can contradict reported refinement evidence
+
+- **File:** scripts/smoke_wheel.py
+- **Evidence:** Payloads pass with log-normalizer change 999, tolerance 2, common grid 999, and missing summary or predictive changes.
+- **Required fix:** Validate the complete refinement schema and recompute convergence from all joint, normalizer, six-summary, and predictive components against the exact configured tolerance and grid.
 
 ## Warnings
 
-### WR-01: Prediction silently replaces the fitted backend
+### WR-01: Retained custom backend behavior may mutate after fitting
 
-- **File:** `src/stableboundary/result.py`
-- **Evidence:** Predictive methods instantiate `ScipyS0Backend` even when inference used an injected, validated backend. Prediction can therefore use different numerical semantics from fitting.
-- **Required fix:** Retain and reuse the fitted backend, or require an explicitly supplied backend whose metadata is checked for compatibility. Add a backend-continuity test.
+- **Files:** src/stableboundary/posterior.py, src/stableboundary/result.py
+- **Evidence:** A conforming backend changed prediction after fitting while retaining identical metadata.
+- **Required fix:** Reconstruct only the canonical immutable package backend from exact metadata and explicitly refuse prediction for injected research backends.
 
-### WR-02: ZIP sdists are accepted by discovery but opened as tar archives
+### WR-02: QuadratureConfig accepts booleans/strings and leaks native exceptions
 
-- **File:** `scripts/smoke_wheel.py`
-- **Evidence:** Artifact discovery accepts `.zip`, while archive inspection always calls the tar reader.
-- **Required fix:** Restrict the smoke contract to the built `.tar.gz` sdist or implement a separate ZIP inspection path. Test the selected contract.
+- **File:** src/stableboundary/posterior.py
+- **Required fix:** Require non-boolean Real values and raise ValidationError for all malformed controls.
 
-### WR-03: Installed smoke does not certify the inference method
+### WR-03: The non-S0 regression catches Exception too broadly
 
-- **File:** `scripts/smoke_wheel.py`
-- **Evidence:** The subprocess oracle checks status and numerical summaries but does not require `method == "exact_finite_three_cell"`.
-- **Required fix:** Assert the exact method identifier in installed wheel and sdist runs.
+- **File:** tests/test_fit_known.py
+- **Required fix:** Require ValidationError specifically.
 
-### WR-04: Malformed scientific output can pass installed-smoke validation
+### WR-04: SciPy compatibility relies on a direct private-module import
 
-- **File:** `scripts/smoke_wheel.py`
-- **Evidence:** Counts are coerced through `int`, allowing fractional or string values; non-negativity, count totals, interval ordering, and parameter-domain constraints are not comprehensively checked.
-- **Required fix:** Validate strict JSON types, count keys and total, finite values, interval ordering, and all alpha/beta/local-parameter domains without lossy coercion. Add malformed-payload tests.
+- **Files:** src/stableboundary/backends/_scipy_s0.py, pyproject.toml
+- **Required fix:** Construct the isolated generator through a guarded compatibility layer based on the public levy_stable object and exercise supported dependency lines in CI.
 
-### WR-05: Build and installed-smoke subprocesses have no time bounds
+### WR-05: Required scientific environment lock and minimum-dependency checks are absent
 
-- **Files:** `scripts/smoke_wheel.py`, `tests/test_installed_package.py`
-- **Evidence:** Dependency installation and proof-of-work subprocesses can hang indefinitely, including in CI.
-- **Required fix:** Add explicit, stage-appropriate subprocess timeouts, surface timeout context cleanly, and cover timeout handling in tests.
+- **Files:** uv.lock, .github/workflows/ci.yml, pyproject.toml
+- **Required fix:** Commit uv.lock and add locked plus NumPy 2.2.0/SciPy 1.18.0 jobs while retaining the latest matrix.
+
+### WR-06: Audit records omit Python and NumPy versions
+
+- **File:** src/stableboundary/result.py
+- **Required fix:** Record a structured environment block for Python, NumPy, SciPy, and stableboundary versions.
+
+### WR-07: Coverage policy is configured but unenforced
+
+- **Files:** pyproject.toml, .github/workflows/ci.yml
+- **Required fix:** Enforce branch coverage at a declared threshold; current measured overall coverage is approximately 82%.
+
+### WR-08: The documented executable example is absent from distributions
+
+- **Files:** README.md, pyproject.toml
+- **Required fix:** Include the example in the sdist and provide a complete installed-user workflow in the README.
+
+### WR-09: GitHub Actions use mutable, deprecated major tags
+
+- **File:** .github/workflows/ci.yml
+- **Required fix:** Use current official action releases pinned to immutable full commit SHAs.
+
+## Repository setting
+
+### IN-01: Git best practice is not server-enforced
+
+- **Evidence:** main has no protection/ruleset, and two repair commits were pushed directly before the branch workflow was corrected.
+- **Required action:** After the repair PR is clean, require pull requests and successful CI for main, block force-push/deletion including administrators, enable merged-branch cleanup, and use one consistent merge strategy.
+
+## Confirmed repairs
+
+- Exact-posterior endpoint-aware and asymmetric tau quantiles passed independent adaptive checks.
+- Private S0 settings remained isolated under hostile global/class state and concurrency.
+- The POSIX virtual-environment launcher defect was fixed in 1bdb863 and all nine OS/Python CI jobs passed.
+- The first-cycle archive traversal, strict basic payload, and timeout fixes remain effective but are not sufficient for a clean verdict.
 
 ## Required re-review
 
-Re-run numerical correctness, backend-provenance, archive-safety, lint, strict typing, ordinary tests, build metadata, wheel-content, and clean wheel/sdist installation checks after repairs. The review status may become `clean` only when no Critical or Warning findings remain.
+Re-run all three adversarial scopes on the combined second-cycle branch. A clean verdict requires no Critical or Warning findings, a green latest/minimum/locked CI suite, clean wheel and sdist proof runs, and server-enforced main-branch policy.
