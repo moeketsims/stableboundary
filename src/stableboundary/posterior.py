@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from math import isfinite
-from numbers import Integral
-from typing import Final
+from numbers import Integral, Real
+from typing import Final, Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -24,9 +24,10 @@ from .backends import (
     ScipyS0Backend,
     StableBackend,
     validate_s0_backend,
+    validate_s0_metadata,
 )
 from .cells import CellCounts
-from .design import LocalDesign, LocalPrior
+from .design import KnownNuisance, LocalDesign, LocalPrior
 
 _QUANTITIES: Final = (
     "h",
@@ -37,6 +38,7 @@ _QUANTITIES: Final = (
     "tau_minus",
 )
 _PUSHFORWARD_NODES, _PUSHFORWARD_WEIGHTS = roots_legendre(8)
+_CANONICAL_SCIPY_S0_TYPE: Final = ScipyS0Backend
 
 
 def _bounded_integer(name: str, value: int, *, minimum: int, maximum: int) -> int:
@@ -45,6 +47,24 @@ def _bounded_integer(name: str, value: int, *, minimum: int, maximum: int) -> in
     result = int(value)
     if not minimum <= result <= maximum:
         raise ValidationError(f"{name} must lie in [{minimum}, {maximum}]")
+    return result
+
+
+def _bounded_real(
+    name: str,
+    value: float,
+    *,
+    lower: float,
+    upper: float,
+    upper_inclusive: bool,
+) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValidationError(f"{name} must be a real number")
+    result = float(value)
+    upper_valid = result <= upper if upper_inclusive else result < upper
+    if not isfinite(result) or not lower < result or not upper_valid:
+        closing = "]" if upper_inclusive else ")"
+        raise ValidationError(f"{name} must lie in ({lower}, {upper}{closing}")
     return result
 
 
@@ -66,12 +86,20 @@ class QuadratureConfig:
         common = _bounded_integer(
             "common_grid_points", self.common_grid_points, minimum=3, maximum=513
         )
-        tolerance = float(self.refinement_tolerance)
-        interval_mass = float(self.interval_mass)
-        if not isfinite(tolerance) or not 0.0 < tolerance <= 1.0:
-            raise ValidationError("refinement_tolerance must lie in (0, 1]")
-        if not isfinite(interval_mass) or not 0.0 < interval_mass < 1.0:
-            raise ValidationError("interval_mass must lie strictly inside (0, 1)")
+        tolerance = _bounded_real(
+            "refinement_tolerance",
+            self.refinement_tolerance,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=True,
+        )
+        interval_mass = _bounded_real(
+            "interval_mass",
+            self.interval_mass,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+        )
         object.__setattr__(self, "base_nodes", base)
         object.__setattr__(self, "refined_nodes", refined)
         object.__setattr__(self, "common_grid_points", common)
@@ -149,6 +177,32 @@ class RefinementDiagnostics:
         return max(values)
 
 
+def _validate_experiment_provenance(
+    counts: CellCounts,
+    design: LocalDesign,
+    prior: LocalPrior,
+) -> None:
+    """Reject composition across finite experiments before numerical work."""
+    retained_design = getattr(counts, "design", None)
+    retained_nuisance = getattr(counts, "nuisance", None)
+    if not isinstance(retained_design, LocalDesign) or retained_design != design:
+        raise ValidationError("counts must retain the supplied full design")
+    if counts.threshold != design.threshold or counts.n != design.n:
+        raise ValidationError("counts threshold and sample size must match the design")
+    if not isinstance(retained_nuisance, KnownNuisance):
+        raise ValidationError("counts must retain known-nuisance provenance")
+    retained_nuisance.require_externally_known()
+    if prior.design != design:
+        raise ValidationError("prior must be defined on the supplied design")
+    values = (counts.n_minus, counts.n_zero, counts.n_plus)
+    if any(
+        isinstance(value, bool) or not isinstance(value, Integral) for value in values
+    ):
+        raise ValidationError("cell counts must be integers")
+    if any(int(value) < 0 for value in values) or sum(map(int, values)) != design.n:
+        raise ValidationError("cell counts must form the supplied finite design")
+
+
 @dataclass(frozen=True, slots=True)
 class PosteriorGrid:
     """Read-only refined tensor grid and normalized posterior probability mass."""
@@ -161,11 +215,13 @@ class PosteriorGrid:
     log_normalizer: float
     base_nodes: int
     refined_nodes: int
-    r: float
     interval_mass: float
     summaries: tuple[_PosteriorSummary, ...]
+    design: LocalDesign
+    prior: LocalPrior
+    counts: CellCounts
     backend_metadata: BackendMetadata
-    _backend: StableBackend = field(repr=False, compare=False)
+    backend_origin: Literal["canonical_scipy_s0", "custom"]
     refinement: RefinementDiagnostics
 
     def __post_init__(self) -> None:
@@ -186,9 +242,17 @@ class PosteriorGrid:
             raise ConvergenceError(
                 "posterior summaries must cover each supported quantity once"
             )
-        _, live_metadata = validate_s0_backend(self._backend)
-        if live_metadata != self.backend_metadata:
-            raise ValidationError("retained backend metadata changed during inference")
+        _validate_experiment_provenance(self.counts, self.design, self.prior)
+        validate_s0_metadata(self.backend_metadata)
+        if self.backend_origin not in {"canonical_scipy_s0", "custom"}:
+            raise ValidationError("posterior backend origin is invalid")
+        if (
+            self.backend_origin == "canonical_scipy_s0"
+            and self.backend_metadata != _CANONICAL_SCIPY_S0_TYPE().metadata
+        ):
+            raise ValidationError(
+                "canonical SciPy posterior metadata does not match the package backend"
+            )
         for name, value in zip(
             ("h_nodes", "p_nodes", "mass", "q_minus", "q_plus"),
             arrays,
@@ -208,11 +272,24 @@ class PosteriorGrid:
     def backend_parameterization(self) -> str:
         return self.backend_metadata.parameterization
 
+    @property
+    def r(self) -> float:
+        """Return the local rate from the retained full design."""
+        return self.design.r
+
     def prediction_backend(self) -> StableBackend:
-        """Return the fitted backend only while its metadata remains unchanged."""
-        backend, live_metadata = validate_s0_backend(self._backend)
+        """Reconstruct the canonical backend or refuse custom-backend prediction."""
+        if self.backend_origin != "canonical_scipy_s0":
+            raise ValidationError(
+                "prediction is unavailable for a posterior fitted with a custom "
+                "backend; refit with the package canonical SciPy S0 backend"
+            )
+        backend = _CANONICAL_SCIPY_S0_TYPE()
+        _, live_metadata = validate_s0_backend(backend)
         if live_metadata != self.backend_metadata:
-            raise ValidationError("fitted backend metadata changed after inference")
+            raise ValidationError(
+                "canonical SciPy backend metadata changed after inference"
+            )
         return backend
 
     def summary_record(self, quantity: str) -> _PosteriorSummary:
@@ -809,8 +886,9 @@ def compute_exact_posterior(
         raise ValidationError("counts must be a CellCounts object")
     if not isinstance(design, LocalDesign):
         raise ValidationError("design must be a LocalDesign object")
-    if not isinstance(prior, LocalPrior) or prior.design != design:
+    if not isinstance(prior, LocalPrior):
         raise ValidationError("prior must be defined on the supplied design")
+    _validate_experiment_provenance(counts, design, prior)
     controls = QuadratureConfig() if config is None else config
     if not isinstance(controls, QuadratureConfig):
         raise ValidationError("config must be a QuadratureConfig object")
@@ -820,6 +898,11 @@ def compute_exact_posterior(
         )
     candidate: object = ScipyS0Backend() if backend is None else backend
     evaluator, metadata = validate_s0_backend(candidate)
+    backend_origin: Literal["canonical_scipy_s0", "custom"] = (
+        "canonical_scipy_s0"
+        if type(evaluator) is _CANONICAL_SCIPY_S0_TYPE
+        else "custom"
+    )
     base = _evaluate_grid(counts, design, prior, controls.base_nodes, evaluator)
     refined = _evaluate_grid(counts, design, prior, controls.refined_nodes, evaluator)
     diagnostics, summaries = _refinement_diagnostics(
@@ -840,11 +923,13 @@ def compute_exact_posterior(
         log_normalizer=refined.log_normalizer,
         base_nodes=controls.base_nodes,
         refined_nodes=controls.refined_nodes,
-        r=design.r,
         interval_mass=controls.interval_mass,
         summaries=summaries,
+        design=design,
+        prior=prior,
+        counts=counts,
         backend_metadata=metadata,
-        _backend=evaluator,
+        backend_origin=backend_origin,
         refinement=diagnostics,
     )
 

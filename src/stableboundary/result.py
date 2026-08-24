@@ -6,9 +6,11 @@ from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from math import isfinite
 from numbers import Integral, Real
-from typing import Final, Literal
+from platform import python_version
+from typing import Final, Literal, Self
 
 import numpy as np
+import scipy  # type: ignore[import-untyped]
 from numpy.typing import NDArray
 from scipy.special import roots_legendre, xlogy  # type: ignore[import-untyped]
 
@@ -275,7 +277,7 @@ class PredictiveQuantileEstimate:
         }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class KnownNuisanceFit:
     """Exact finite-cell Bayesian fit with known location and scale."""
 
@@ -291,14 +293,61 @@ class KnownNuisanceFit:
         default="exact_finite_three_cell", init=False
     )
 
+    def __init__(self) -> None:
+        """Prevent public composition of independently produced components."""
+        raise TypeError("use stableboundary.fit_known_nuisance() to construct a fit")
+
+    @classmethod
+    def _from_components(
+        cls,
+        *,
+        nuisance: KnownNuisance,
+        design: LocalDesign,
+        prior: LocalPrior,
+        counts: CellCounts,
+        posterior: PosteriorGrid,
+    ) -> Self:
+        """Construct one fit after validating end-to-end provenance equality."""
+        result = object.__new__(cls)
+        object.__setattr__(result, "nuisance", nuisance)
+        object.__setattr__(result, "design", design)
+        object.__setattr__(result, "prior", prior)
+        object.__setattr__(result, "counts", counts)
+        object.__setattr__(result, "posterior", posterior)
+        object.__setattr__(result, "status", "research_uncertified")
+        object.__setattr__(result, "method", "exact_finite_three_cell")
+        result.__post_init__()
+        return result
+
     def __post_init__(self) -> None:
+        if not isinstance(self.nuisance, KnownNuisance):
+            raise ValidationError("fit nuisance must be a KnownNuisance object")
+        if not isinstance(self.design, LocalDesign):
+            raise ValidationError("fit design must be a LocalDesign object")
+        if not isinstance(self.prior, LocalPrior):
+            raise ValidationError("fit prior must be a LocalPrior object")
+        if not isinstance(self.counts, CellCounts):
+            raise ValidationError("fit counts must be a CellCounts object")
+        if not isinstance(self.posterior, PosteriorGrid):
+            raise ValidationError("fit posterior must be a PosteriorGrid object")
         self.nuisance.require_externally_known()
         if self.prior.design != self.design:
             raise ValidationError("fit prior must use the retained design")
-        if self.counts.n != self.design.n:
-            raise ValidationError("fit counts must match the retained design")
-        if self.posterior.r != self.design.r:
-            raise ValidationError("posterior and design must retain the same r")
+        if self.counts.design != self.design:
+            raise ValidationError("fit counts must retain the full fit design")
+        if self.counts.nuisance != self.nuisance:
+            raise ValidationError("fit counts must retain the fit nuisance provenance")
+        if (
+            self.counts.n_minus + self.counts.n_zero + self.counts.n_plus
+            != self.design.n
+        ):
+            raise ValidationError("fit counts must form the retained finite design")
+        if self.posterior.design != self.design:
+            raise ValidationError("posterior must retain the full fit design")
+        if self.posterior.prior != self.prior:
+            raise ValidationError("posterior must retain the fit prior")
+        if self.posterior.counts != self.counts:
+            raise ValidationError("posterior must retain the fit counts and provenance")
 
     @property
     def r(self) -> float:
@@ -412,9 +461,16 @@ class KnownNuisanceFit:
 
     def audit_record(self) -> dict[str, object]:
         refinement = self.posterior.refinement
+        package_version = _package_version()
         return {
             "schema_version": 1,
-            "package_version": _package_version(),
+            "package_version": package_version,
+            "environment": {
+                "python": python_version(),
+                "numpy": np.__version__,
+                "scipy": scipy.__version__,
+                "stableboundary": package_version,
+            },
             "status": self.status,
             "method": self.method,
             "parameterization": self.posterior.backend_parameterization,
@@ -476,6 +532,7 @@ class KnownNuisanceFit:
                 "converged": refinement.converged,
             },
             "backend": {
+                "origin": self.posterior.backend_origin,
                 "method": self.posterior.backend_method,
                 "tolerance": self.posterior.backend_tolerance,
                 "parameterization": self.posterior.backend_parameterization,

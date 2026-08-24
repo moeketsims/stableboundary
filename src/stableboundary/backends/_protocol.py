@@ -148,12 +148,9 @@ class StableBackend(Protocol):
         """Draw stable variates with the supplied NumPy generator."""
 
 
-def validate_s0_backend(candidate: object) -> tuple[StableBackend, BackendMetadata]:
-    """Validate a backend and return one immutable S0 metadata snapshot."""
-    if not isinstance(candidate, StableBackend):
-        raise ValidationError("backend must satisfy StableBackend")
-    backend = candidate
-    metadata = backend.metadata
+def validate_s0_metadata(candidate: object) -> BackendMetadata:
+    """Validate one immutable metadata record for a Nolan S0 backend."""
+    metadata = candidate
     if not isinstance(metadata, BackendMetadata):
         raise ValidationError("backend metadata must be a BackendMetadata object")
     if metadata.parameterization != "S0":
@@ -161,6 +158,15 @@ def validate_s0_backend(candidate: object) -> tuple[StableBackend, BackendMetada
             "backend parameterization must be Nolan S0; "
             f"received {metadata.parameterization!r}"
         )
+    return metadata
+
+
+def validate_s0_backend(candidate: object) -> tuple[StableBackend, BackendMetadata]:
+    """Validate a backend and return one immutable S0 metadata snapshot."""
+    if not isinstance(candidate, StableBackend):
+        raise ValidationError("backend must satisfy StableBackend")
+    backend = candidate
+    metadata = validate_s0_metadata(backend.metadata)
     return backend, metadata
 
 
@@ -170,4 +176,5 @@ __all__ = [
     "BackendSetting",
     "StableBackend",
     "validate_s0_backend",
+    "validate_s0_metadata",
 ]

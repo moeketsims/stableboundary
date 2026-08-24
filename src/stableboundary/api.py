@@ -39,7 +39,7 @@ def fit_known_nuisance(
         selected_prior,
         quadrature,
     )
-    return KnownNuisanceFit(
+    return KnownNuisanceFit._from_components(
         nuisance=nuisance,
         design=design,
         prior=selected_prior,

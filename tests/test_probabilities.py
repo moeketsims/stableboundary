@@ -102,6 +102,11 @@ def test_backend_is_runtime_checkable_and_metadata_is_immutable() -> None:
     }
     with pytest.raises(FrozenInstanceError):
         backend.metadata.tolerance = 1.0  # type: ignore[misc]
+    with pytest.raises(AttributeError):
+        backend._metadata = BackendMetadata(  # type: ignore[misc]
+            method="mutated",
+            tolerance=1e-6,
+        )
 
 
 def test_backend_is_independent_of_hostile_public_scipy_state() -> None:
@@ -174,6 +179,17 @@ def test_backend_does_not_call_public_scipy_singleton(
         random_state=np.random.default_rng(17),
     )
     assert draws.shape == (3,)
+
+
+def test_private_generator_uses_the_public_generator_type_without_private_import() -> (
+    None
+):
+    assert scipy_s0_module._SCIPY_S0 is not levy_stable
+    assert type(scipy_s0_module._SCIPY_S0) is type(levy_stable)
+    source = Path("src/stableboundary/backends/_scipy_s0.py").read_text(
+        encoding="utf-8"
+    )
+    assert "scipy.stats._levy_stable" not in source
 
 
 def test_backend_reforces_every_private_setting_before_evaluation(
@@ -490,8 +506,12 @@ def test_cell_counts_sum_and_threshold_boundaries_are_central(
     assert counts.n_plus == 1
     assert counts.n_zero == local_design.n - 2
     assert counts.n_minus + counts.n_zero + counts.n_plus == counts.n
+    assert counts.design is local_design
+    assert counts.nuisance is nuisance
     with pytest.raises(FrozenInstanceError):
         counts.n_zero = 0  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        counts.design = LocalDesign.from_sample_size(local_design.n)  # type: ignore[misc]
 
 
 def test_cell_counts_are_shift_scale_equivariant(local_design: LocalDesign) -> None:
@@ -522,7 +542,13 @@ def test_cell_counts_are_shift_scale_equivariant(local_design: LocalDesign) -> N
         ),
         design=local_design,
     )
-    assert shifted == baseline
+    assert (shifted.n_minus, shifted.n_zero, shifted.n_plus) == (
+        baseline.n_minus,
+        baseline.n_zero,
+        baseline.n_plus,
+    )
+    assert shifted.design == baseline.design
+    assert shifted.nuisance != baseline.nuisance
 
 
 @pytest.mark.parametrize(
