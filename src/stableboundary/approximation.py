@@ -359,10 +359,67 @@ class _TruncatedContinuousDistribution:
         return min(1.0, max(0.0, probability))
 
 
+@dataclass(frozen=True, slots=True)
+class _ReflectedContinuousDistribution:
+    """Expose a compact law in ``p = 1 - u`` without right-tail cancellation."""
+
+    base: _TruncatedContinuousDistribution
+
+    @property
+    def lower(self) -> float:
+        return 1.0 - self.base.upper
+
+    @property
+    def upper(self) -> float:
+        return 1.0 - self.base.lower
+
+    @property
+    def log_truncation_mass(self) -> float:
+        return self.base.log_truncation_mass
+
+    @property
+    def truncation_mass(self) -> float:
+        return self.base.truncation_mass
+
+    @property
+    def truncation_mass_projected(self) -> bool:
+        return self.base.truncation_mass_projected
+
+    def cdf(self, value: float) -> float:
+        return self.base.survival(1.0 - value)
+
+    def survival(self, value: float) -> float:
+        return self.base.cdf(1.0 - value)
+
+    def quantile(self, probability: float) -> float:
+        # Validate both probability tails before reflecting.  Near p=1, a single
+        # binary64 p-ULP can span more than the CDF residual tolerance even though
+        # the u-coordinate quantile itself is fully resolved.
+        return 1.0 - self.base.quantile(1.0 - probability)
+
+    def mean(self) -> float:
+        return 1.0 - self.base.mean()
+
+    def expectation(
+        self,
+        function: Callable[[float], float],
+        points: Sequence[float],
+    ) -> float:
+        return self.base.expectation(
+            lambda value: function(1.0 - value),
+            tuple(1.0 - point for point in points),
+        )
+
+
+_ContinuousDistribution = (
+    _TruncatedContinuousDistribution | _ReflectedContinuousDistribution
+)
+
+
 def _product_cdf_condition_on_h(
     value: float,
-    h_distribution: _TruncatedContinuousDistribution,
-    p_distribution: _TruncatedContinuousDistribution,
+    h_distribution: _ContinuousDistribution,
+    p_distribution: _ContinuousDistribution,
     r: float,
     *,
     positive: bool,
@@ -392,8 +449,8 @@ def _product_cdf_condition_on_h(
 
 def _product_cdf_condition_on_p(
     value: float,
-    h_distribution: _TruncatedContinuousDistribution,
-    p_distribution: _TruncatedContinuousDistribution,
+    h_distribution: _ContinuousDistribution,
+    p_distribution: _ContinuousDistribution,
     r: float,
     *,
     positive: bool,
@@ -420,8 +477,8 @@ def _product_cdf_condition_on_p(
 
 
 def _product_quantile(
-    h_distribution: _TruncatedContinuousDistribution,
-    p_distribution: _TruncatedContinuousDistribution,
+    h_distribution: _ContinuousDistribution,
+    p_distribution: _ContinuousDistribution,
     r: float,
     probability: float,
     *,
@@ -510,8 +567,20 @@ def _beta_distribution(
     negative_shape: float,
     lower: float,
     upper: float,
-) -> _TruncatedContinuousDistribution:
+) -> _ContinuousDistribution:
     """Construct the normalized compact Beta law used by the approximation."""
+    if lower + upper > 1.0:
+        reflected = _beta_distribution(
+            negative_shape,
+            positive_shape,
+            1.0 - upper,
+            1.0 - lower,
+        )
+        if not isinstance(reflected, _TruncatedContinuousDistribution):
+            raise NumericalProbabilityError(
+                "reflected Beta construction did not reach a stable coordinate"
+            )
+        return _ReflectedContinuousDistribution(reflected)
     if positive_shape == 1.0 and negative_shape == 1.0:
         mode = 0.5 * (lower + upper)
     elif positive_shape == 1.0:
@@ -734,7 +803,7 @@ class LimitingApproximationFit:
             self.prior.h_max,
         )
 
-    def _p_distribution(self) -> _TruncatedContinuousDistribution:
+    def _p_distribution(self) -> _ContinuousDistribution:
         return _beta_distribution(
             self.p_shape_positive,
             self.p_shape_negative,
