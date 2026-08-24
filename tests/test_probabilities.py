@@ -10,8 +10,10 @@ from typing import Any
 
 import numpy as np
 import pytest
+import scipy
 from scipy.stats import levy_stable  # type: ignore[import-untyped]
 
+import stableboundary.backends._scipy_s0 as scipy_s0_module
 from stableboundary import (
     CellCounts,
     CellProbabilities,
@@ -80,24 +82,46 @@ def _hostile_scipy_state() -> Iterator[dict[str, Any]]:
 def test_backend_is_runtime_checkable_and_metadata_is_immutable() -> None:
     backend = ScipyS0Backend()
     assert isinstance(backend, StableBackend)
-    assert backend.metadata == BackendMetadata(
-        method="scipy-piecewise-s0-direct-log-tails",
-        tolerance=1.2e-14,
-        parameterization="S0",
-    )
+    assert backend.metadata.method == "scipy-piecewise-s0-direct-log-tails"
+    assert backend.metadata.tolerance == 1.2e-14
+    assert backend.metadata.parameterization == "S0"
+    assert backend.metadata.library == "scipy"
+    assert backend.metadata.library_version == scipy.__version__
+    assert dict(backend.metadata.effective_settings) == {
+        "parameterization": "S0",
+        "pdf_default_method": "piecewise",
+        "cdf_default_method": "piecewise",
+        "quad_eps": 1.2e-14,
+        "piecewise_x_tol_near_zeta": 0.005,
+        "piecewise_alpha_tol_near_one": 0.005,
+        "pdf_fft_grid_spacing": 0.001,
+        "pdf_fft_n_points_two_power": None,
+        "pdf_fft_interpolation_degree": 3,
+        "pdf_fft_interpolation_level": 3,
+        "pdf_fft_min_points_threshold": None,
+    }
     with pytest.raises(FrozenInstanceError):
         backend.metadata.tolerance = 1.0  # type: ignore[misc]
 
 
-def test_backend_restores_complete_scipy_state_after_success() -> None:
+def test_backend_is_independent_of_hostile_public_scipy_state() -> None:
     backend = ScipyS0Backend()
+    expected = (
+        backend.logpdf(0.25, 1.8, -0.3),
+        backend.cdf(-2.0, 1.8, -0.3),
+        backend.sf(2.0, 1.8, -0.3),
+    )
     with _hostile_scipy_state() as incoming:
-        value = backend.logpdf(0.25, 1.8, -0.3)
-        assert np.isfinite(value)
+        actual = (
+            backend.logpdf(0.25, 1.8, -0.3),
+            backend.cdf(-2.0, 1.8, -0.3),
+            backend.sf(2.0, 1.8, -0.3),
+        )
+        assert actual == expected
         assert _snapshot_scipy_state() == incoming
 
 
-def test_backend_restores_inherited_setting_ownership() -> None:
+def test_backend_never_changes_public_setting_ownership() -> None:
     backend = ScipyS0Backend()
     incoming = {
         name: (name in levy_stable.__dict__, getattr(levy_stable, name))
@@ -111,7 +135,7 @@ def test_backend_restores_inherited_setting_ownership() -> None:
     assert outgoing == incoming
 
 
-def test_backend_restores_complete_scipy_state_after_failure(
+def test_backend_preserves_public_state_after_private_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = ScipyS0Backend()
@@ -121,10 +145,55 @@ def test_backend_restores_complete_scipy_state_after_failure(
         raise RuntimeError("forced backend failure")
 
     with _hostile_scipy_state() as incoming:
-        monkeypatch.setattr(levy_stable, "logpdf", fail)
+        monkeypatch.setattr(scipy_s0_module._SCIPY_S0, "logpdf", fail)
         with pytest.raises(NumericalProbabilityError, match=r"logpdf.*alpha_shape"):
             backend.logpdf(0.25, 1.8, -0.3)
         assert _snapshot_scipy_state() == incoming
+
+
+def test_backend_does_not_call_public_scipy_singleton(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = ScipyS0Backend()
+
+    def forbidden(*args: object, **kwargs: object) -> float:
+        del args, kwargs
+        raise AssertionError("public scipy.stats.levy_stable must not be called")
+
+    monkeypatch.setattr(levy_stable, "logpdf", forbidden)
+    monkeypatch.setattr(levy_stable, "cdf", forbidden)
+    monkeypatch.setattr(levy_stable, "rvs", forbidden)
+    assert np.isfinite(backend.logpdf(0.25, 1.8, -0.3))
+    assert np.isfinite(backend.logcdf(-2.0, 1.8, -0.3))
+    draws = backend.rvs(
+        1.8,
+        -0.3,
+        loc=0.0,
+        scale=1.0,
+        size=3,
+        random_state=np.random.default_rng(17),
+    )
+    assert draws.shape == (3,)
+
+
+def test_backend_reforces_every_private_setting_before_evaluation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = ScipyS0Backend()
+    private = scipy_s0_module._SCIPY_S0
+    expected = dict(backend.metadata.effective_settings)
+    original_cdf = private.cdf
+    observed: dict[str, object] = {}
+    for name, value in HOSTILE_SETTINGS.items():
+        setattr(private, name, value)
+
+    def recording_cdf(*args: object, **kwargs: object) -> object:
+        observed.update({name: getattr(private, name) for name in GUARDED_SETTINGS})
+        return original_cdf(*args, **kwargs)
+
+    monkeypatch.setattr(private, "cdf", recording_cdf)
+    assert np.isfinite(backend.cdf(-2.0, 1.8, -0.3))
+    assert observed == expected
 
 
 def test_backend_finite_reference_log_values_and_broadcasting() -> None:
@@ -162,8 +231,8 @@ def test_positive_tail_backend_uses_direct_reflected_cdf(
         del args, kwargs
         raise AssertionError("positive tails must not use SciPy's subtractive sf")
 
-    monkeypatch.setattr(levy_stable, "cdf", direct_cdf)
-    monkeypatch.setattr(levy_stable, "sf", forbidden_sf)
+    monkeypatch.setattr(scipy_s0_module._SCIPY_S0, "cdf", direct_cdf)
+    monkeypatch.setattr(scipy_s0_module._SCIPY_S0, "sf", forbidden_sf)
     result = getattr(backend, method_name)(3.0, 1.8, 0.2, loc=0.5, scale=2.0)
     assert np.isfinite(result)
     assert len(calls) == 1
@@ -185,7 +254,7 @@ def test_logcdf_uses_direct_cdf_then_checked_log(
         calls["cdf"] += 1
         return np.exp(-4.0)
 
-    monkeypatch.setattr(levy_stable, "cdf", direct_cdf)
+    monkeypatch.setattr(scipy_s0_module._SCIPY_S0, "cdf", direct_cdf)
     assert backend.logcdf(-3.0, 1.8, 0.2) == pytest.approx(-4.0)
     assert calls["cdf"] == 1
 

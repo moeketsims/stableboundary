@@ -10,6 +10,7 @@ from numpy.random import Generator
 from numpy.typing import ArrayLike, NDArray
 
 BackendResult = float | NDArray[np.float64]
+type BackendSetting = str | int | float | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +20,9 @@ class BackendMetadata:
     method: str
     tolerance: float
     parameterization: str = "S0"
+    library: str | None = None
+    library_version: str | None = None
+    effective_settings: tuple[tuple[str, BackendSetting], ...] = ()
 
 
 @runtime_checkable
@@ -102,4 +106,9 @@ class StableBackend(Protocol):
         """Draw stable variates with the supplied NumPy generator."""
 
 
-__all__ = ["BackendMetadata", "BackendResult", "StableBackend"]
+__all__ = [
+    "BackendMetadata",
+    "BackendResult",
+    "BackendSetting",
+    "StableBackend",
+]

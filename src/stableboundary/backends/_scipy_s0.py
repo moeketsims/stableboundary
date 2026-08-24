@@ -1,9 +1,9 @@
-"""Scoped adapter for SciPy's process-global Nolan ``S0`` implementation.
+"""Isolated adapter for SciPy's Nolan ``S0`` implementation.
 
-SciPy exposes stable-law configuration as mutable class attributes.  Every
-call in this module therefore executes while holding one re-entrant process
-lock, after taking a complete snapshot and forcing the package's canonical
-settings.  The exact incoming values are restored in ``finally``.
+SciPy's public ``levy_stable`` singleton exposes mutable numerical controls.
+This module never changes that singleton.  Instead, it owns a private
+``levy_stable_gen`` instance whose complete effective configuration is forced
+under a package lock before every operation and retained in backend metadata.
 """
 
 from __future__ import annotations
@@ -16,51 +16,42 @@ from threading import RLock
 from typing import Final, cast
 
 import numpy as np
+import scipy  # type: ignore[import-untyped]
 from numpy.random import Generator
 from numpy.typing import ArrayLike, NDArray
-from scipy.stats import levy_stable  # type: ignore[import-untyped]
+from scipy.stats._levy_stable import (  # type: ignore[import-untyped]
+    levy_stable_gen,
+)
 
 from stableboundary._exceptions import NumericalProbabilityError, ValidationError
 
-from ._protocol import BackendMetadata, BackendResult
+from ._protocol import BackendMetadata, BackendResult, BackendSetting
 
 _SCIPY_LOCK = RLock()
 _QUAD_EPS: Final = 1.2e-14
-_GUARDED_SETTINGS: Final = (
-    "parameterization",
-    "pdf_default_method",
-    "cdf_default_method",
-    "quad_eps",
-    "piecewise_x_tol_near_zeta",
-    "piecewise_alpha_tol_near_one",
-    "pdf_fft_grid_spacing",
-    "pdf_fft_n_points_two_power",
-    "pdf_fft_interpolation_degree",
-    "pdf_fft_interpolation_level",
-    "pdf_fft_min_points_threshold",
+_CANONICAL_SETTINGS: Final[tuple[tuple[str, BackendSetting], ...]] = (
+    ("parameterization", "S0"),
+    ("pdf_default_method", "piecewise"),
+    ("cdf_default_method", "piecewise"),
+    ("quad_eps", _QUAD_EPS),
+    ("piecewise_x_tol_near_zeta", 0.005),
+    ("piecewise_alpha_tol_near_one", 0.005),
+    ("pdf_fft_grid_spacing", 0.001),
+    ("pdf_fft_n_points_two_power", None),
+    ("pdf_fft_interpolation_degree", 3),
+    ("pdf_fft_interpolation_level", 3),
+    ("pdf_fft_min_points_threshold", None),
 )
+_SCIPY_S0 = levy_stable_gen(name="_stableboundary_levy_stable")
 
 
 @contextmanager
-def _canonical_s0_state() -> Iterator[None]:
-    """Temporarily force canonical SciPy settings and restore every field."""
+def _canonical_s0_generator() -> Iterator[levy_stable_gen]:
+    """Yield the locked package-owned generator in its canonical state."""
     with _SCIPY_LOCK:
-        snapshot = {
-            name: (name in levy_stable.__dict__, getattr(levy_stable, name))
-            for name in _GUARDED_SETTINGS
-        }
-        try:
-            levy_stable.parameterization = "S0"
-            levy_stable.pdf_default_method = "piecewise"
-            levy_stable.cdf_default_method = "piecewise"
-            levy_stable.quad_eps = _QUAD_EPS
-            yield
-        finally:
-            for name, (was_instance_attribute, value) in snapshot.items():
-                if was_instance_attribute:
-                    setattr(levy_stable, name, value)
-                elif name in levy_stable.__dict__:
-                    delattr(levy_stable, name)
+        for name, value in _CANONICAL_SETTINGS:
+            setattr(_SCIPY_S0, name, value)
+        yield _SCIPY_S0
 
 
 def _numeric_array(name: str, value: ArrayLike) -> NDArray[np.float64]:
@@ -101,6 +92,10 @@ class ScipyS0Backend:
     _metadata: Final = BackendMetadata(
         method="scipy-piecewise-s0-direct-log-tails",
         tolerance=_QUAD_EPS,
+        parameterization="S0",
+        library="scipy",
+        library_version=scipy.__version__,
+        effective_settings=_CANONICAL_SETTINGS,
     )
 
     @property
@@ -142,8 +137,8 @@ class ScipyS0Backend:
             scale_value,
         )
         try:
-            with _canonical_s0_state():
-                scipy_operation = getattr(levy_stable, operation)
+            with _canonical_s0_generator() as distribution:
+                scipy_operation = getattr(distribution, operation)
                 raw = scipy_operation(
                     x_values,
                     alpha_values,
@@ -295,8 +290,8 @@ class ScipyS0Backend:
             f"scale={scale_value!r}, size={int(size)}"
         )
         try:
-            with _canonical_s0_state():
-                raw = levy_stable.rvs(
+            with _canonical_s0_generator() as distribution:
+                raw = distribution.rvs(
                     alpha_value,
                     beta_value,
                     loc=loc_value,
