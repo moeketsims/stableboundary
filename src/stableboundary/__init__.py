@@ -18,6 +18,7 @@ from ._exceptions import (
     ValidationError,
 )
 from .api import fit_known_nuisance
+from .approximation import fit_limiting_approximation
 from .cells import CellCounts, CellProbabilities
 from .design import KnownNuisance, LocalDesign, LocalPrior, NuisanceMode
 from .parameters import LocalCoordinates, SignedTailGap, StableParams
@@ -68,5 +69,6 @@ __all__ = [
     "ValidationError",
     "__version__",
     "fit_known_nuisance",
+    "fit_limiting_approximation",
     "simulate",
 ]
