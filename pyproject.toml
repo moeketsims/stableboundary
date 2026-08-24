@@ -22,6 +22,7 @@ dev = [
   "build>=1.5,<2",
   "check-wheel-contents>=0.6.3,<1",
   "coverage>=7.15,<8",
+  "hatchling>=1.32,<2",
   "hypothesis>=6.161",
   "mypy>=2.3,<3",
   "pytest>=9.1,<10",
@@ -35,6 +36,7 @@ include = [
   "/README.md",
   "/pyproject.toml",
   "/src/stableboundary",
+  "/uv.lock",
 ]
 exclude = [
   "/.planning",
@@ -82,3 +84,10 @@ files = ["src/stableboundary"]
 [tool.coverage.run]
 branch = true
 source = ["stableboundary"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+
+[tool.uv]
+build-constraint-dependencies = ["hatchling==1.32.0"]
