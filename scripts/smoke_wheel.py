@@ -106,6 +106,7 @@ WINDOWS_RESERVED_STEMS = {
     *(f"com{index}" for index in range(1, 10)),
     *(f"lpt{index}" for index in range(1, 10)),
 }
+SYSTEM_ENVIRONMENT_KEYS = frozenset({"SYSTEMROOT", "WINDIR"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -785,6 +786,36 @@ def _venv_python(environment: Path) -> Path:
     return executable
 
 
+def _subprocess_environment(cwd: Path) -> dict[str, str]:
+    """Return a small, deterministic environment for every child process."""
+    environment = {
+        name: os.environ[name] for name in SYSTEM_ENVIRONMENT_KEYS if name in os.environ
+    }
+    executable_directory = str(Path(sys.executable).resolve().parent)
+    if os.name == "nt" and "SYSTEMROOT" in environment:
+        system32 = str(Path(environment["SYSTEMROOT"]) / "System32")
+        environment["PATH"] = os.pathsep.join((executable_directory, system32))
+    else:
+        environment["PATH"] = executable_directory
+    controlled_root = cwd.resolve()
+    environment.update(
+        {
+            "HOME": str(controlled_root),
+            "USERPROFILE": str(controlled_root),
+            "TEMP": str(controlled_root),
+            "TMP": str(controlled_root),
+            "TMPDIR": str(controlled_root),
+            "PIP_CONFIG_FILE": os.devnull,
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_NO_INPUT": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONSAFEPATH": "1",
+            "PYTHONUTF8": "1",
+        }
+    )
+    return environment
+
+
 def _run(
     command: list[str],
     *,
@@ -793,9 +824,7 @@ def _run(
     timeout_seconds: float,
     capture: bool = False,
 ) -> str:
-    environment = os.environ.copy()
-    environment.pop("PYTHONHOME", None)
-    environment.pop("PYTHONPATH", None)
+    environment = _subprocess_environment(cwd)
     try:
         completed = subprocess.run(
             command,
@@ -821,8 +850,11 @@ def _install_archive(python: Path, artifact: Path, *, cwd: Path) -> None:
             str(python),
             "-m",
             "pip",
+            "--isolated",
+            "--no-input",
             "install",
             "--disable-pip-version-check",
+            "--no-compile",
             "--only-binary=:all:",
             "numpy>=2.2",
             "scipy>=1.18,<1.19",
@@ -850,8 +882,11 @@ def _install_archive(python: Path, artifact: Path, *, cwd: Path) -> None:
             str(python),
             "-m",
             "pip",
+            "--isolated",
+            "--no-input",
             "install",
             "--disable-pip-version-check",
+            "--no-compile",
             "--no-deps",
             str(artifact),
         ],
@@ -864,6 +899,8 @@ def _install_archive(python: Path, artifact: Path, *, cwd: Path) -> None:
             str(python),
             "-m",
             "pip",
+            "--isolated",
+            "--no-input",
             "check",
             "--disable-pip-version-check",
         ],

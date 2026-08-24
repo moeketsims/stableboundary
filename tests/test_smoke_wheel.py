@@ -1705,10 +1705,55 @@ def test_artifact_install_separates_dependencies_and_uses_no_deps(
     assert "numpy>=2.2" in calls[0]
     assert "scipy>=1.18,<1.19" in calls[0]
     assert not any("stableboundary" in argument for argument in calls[0])
+    assert "--isolated" in calls[0]
+    assert "--no-input" in calls[0]
+    assert "--no-compile" in calls[0]
     assert "find_spec('stableboundary') is None" in calls[1][-1]
     assert "--no-deps" in calls[2]
+    assert "--isolated" in calls[2]
+    assert "--no-input" in calls[2]
+    assert "--no-compile" in calls[2]
     assert calls[2][-1] == str(artifact)
-    assert calls[3][-3:] == ["pip", "check", "--disable-pip-version-check"]
+    assert calls[3][-5:] == [
+        "pip",
+        "--isolated",
+        "--no-input",
+        "check",
+        "--disable-pip-version-check",
+    ]
+
+
+def test_stage_subprocess_uses_allowlisted_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, str] = {}
+
+    def record(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del args
+        raw_environment = kwargs["env"]
+        assert isinstance(raw_environment, dict)
+        observed.update(raw_environment)
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="")
+
+    monkeypatch.setenv("PIP_INDEX_URL", "https://attacker.invalid/simple")
+    monkeypatch.setenv("PIP_TARGET", str(tmp_path / "attacker-target"))
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "startup-hook"))
+    monkeypatch.setenv("PYTHONHOME", str(tmp_path / "fake-home"))
+    monkeypatch.setattr(smoke_wheel.subprocess, "run", record)
+
+    smoke_wheel._run(
+        ["python"],
+        cwd=tmp_path,
+        stage="allowlist proof",
+        timeout_seconds=17.0,
+    )
+
+    assert "PIP_INDEX_URL" not in observed
+    assert "PIP_TARGET" not in observed
+    assert "PYTHONPATH" not in observed
+    assert "PYTHONHOME" not in observed
+    assert observed["PIP_CONFIG_FILE"] == os.devnull
+    assert observed["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
 def test_artifact_install_fails_closed_when_pip_check_fails(
