@@ -731,6 +731,34 @@ def test_source_tree_simulation_fingerprint_is_explicitly_approved() -> None:
     smoke_wheel._validate_example(payload, runtime_versions=runtime_versions)
 
 
+def test_source_tree_posterior_regression_is_explicitly_approved() -> None:
+    """Exercise primary and reflected inference in every ordinary CI environment."""
+    science_probe = smoke_wheel._installed_science_probe(
+        Path(sys.executable),
+        cwd=smoke_wheel.REPOSITORY,
+        artifact=Path("source-tree"),
+    )
+    assert set(science_probe) == {"primary", "reflection"}
+    primary = science_probe["primary"]
+    reflection = science_probe["reflection"]
+    assert isinstance(primary, dict)
+    simulation = primary["simulation"]
+    assert isinstance(simulation, dict)
+    runtime_versions = {
+        "python": simulation["python_version"],
+        "platform_system": simulation["platform_system"],
+        "platform_machine": simulation["platform_machine"],
+        "numpy": simulation["numpy_version"],
+        "scipy": simulation["scipy_version"],
+    }
+
+    smoke_wheel._validate_science_probe(
+        primary,
+        reflection,
+        runtime_versions=runtime_versions,
+    )
+
+
 @pytest.mark.parametrize(
     ("container", "quantity", "field", "fake_value"),
     [
@@ -753,6 +781,88 @@ def test_prior_invented_valid_payload_values_are_rejected(
 
     with pytest.raises(RuntimeError, match="trusted numerical reference"):
         smoke_wheel._validate_example(payload)
+
+
+def test_numeric_reference_mismatch_reports_actual_expected_and_tolerance() -> None:
+    with pytest.raises(RuntimeError, match="trusted numerical reference") as captured:
+        smoke_wheel._reference_close(
+            "diagnostic quantity",
+            1.25,
+            1.0,
+            tolerance=0.01,
+        )
+
+    message = str(captured.value)
+    assert "actual=1.25" in message
+    assert "expected=1.0" in message
+    assert "absolute_tolerance=0.01" in message
+    assert "absolute_error=0.25" in message
+
+
+def test_numerical_regression_fingerprint_contains_all_observed_evidence() -> None:
+    primary = _valid_payload()
+    fingerprint = smoke_wheel._numerical_regression_fingerprint(
+        primary,
+        {
+            "status": primary["status"],
+            "method": primary["method"],
+            "parameterization": primary["parameterization"],
+            "counts": primary["counts"],
+            "log_normalizer": primary["quadrature"]["log_normalizer"],
+            "parameters": primary["parameters"],
+            "identification": primary["identification"],
+            "warnings": primary["warnings"],
+        },
+        runtime_versions=_valid_runtime_versions(),
+    )
+
+    observed = fingerprint["primary"]
+    assert isinstance(observed, dict)
+    refinement = observed["refinement"]
+    assert isinstance(refinement, dict)
+    components = refinement["components"]
+    assert isinstance(components, dict)
+    assert refinement["component_count"] == 28
+    assert len(components) == 28
+    assert "summary.h.mean" in components
+    assert "summary.tau_minus.interval_upper" in components
+    assert "predictive.negative" in components
+    assert observed["quadrature"] == primary["quadrature"]
+    assert observed["parameters"] == primary["parameters"]
+    assert observed["posterior_mass"] == primary["posterior_mass"]
+    assert observed["identification"] == primary["identification"]
+    assert observed["warnings"] == primary["warnings"]
+    assert observed["known_nuisance"] == primary["known_nuisance"]
+    assert observed["backend"] == primary["backend"]
+
+
+def test_science_probe_failure_emits_complete_regression_fingerprint() -> None:
+    primary = _valid_payload()
+    refinement = primary["refinement"]
+    assert isinstance(refinement, dict)
+    refinement["log_normalizer_change"] = 0.001
+
+    with pytest.raises(
+        RuntimeError, match="observed numerical regression fingerprint"
+    ) as captured:
+        smoke_wheel._validate_science_probe(
+            primary,
+            {"status": primary["status"]},
+            runtime_versions=_valid_runtime_versions(),
+        )
+
+    message = str(captured.value)
+    assert "actual=0.001" in message
+    assert "expected=5.329070518200751e-15" in message
+    assert "absolute_tolerance=" in message
+    assert '"component_count": 28' in message
+    assert '"summary.alpha.interval_lower"' in message
+    assert '"summary.tau_plus.median"' in message
+    assert '"predictive.positive"' in message
+    assert '"posterior_mass": 0.9999999999999999' in message
+    assert '"known_nuisance": {' in message
+    assert '"warnings": [' in message
+    assert '"reflection": {' in message
 
 
 def test_installed_payload_requires_complete_schema() -> None:

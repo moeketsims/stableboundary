@@ -1334,7 +1334,10 @@ def _reference_close(
         abs_tol=tolerance,
     ):
         raise RuntimeError(
-            f"installed example {name} differs from its trusted numerical reference"
+            f"installed example {name} differs from its trusted numerical reference: "
+            f"actual={actual_value!r}, expected={expected_value!r}, "
+            f"absolute_tolerance={tolerance!r}, "
+            f"absolute_error={abs(actual_value - expected_value)!r}"
         )
     return actual_value
 
@@ -1711,6 +1714,117 @@ def _validate_refinement(
 def _simulation_failure(reason: str, fingerprint: dict[str, object]) -> RuntimeError:
     encoded = json.dumps(fingerprint, sort_keys=True, allow_nan=False)
     return RuntimeError(f"{reason}; observed simulation fingerprint: {encoded}")
+
+
+def _refinement_regression_fingerprint(value: object) -> dict[str, object]:
+    """Flatten all 28 numerical refinement components for one-line diagnostics."""
+    refinement = value if isinstance(value, dict) else {}
+    summary_changes = refinement.get("summary_changes")
+    summaries = summary_changes if isinstance(summary_changes, dict) else {}
+    predictive_tail = refinement.get("predictive_tail")
+    predictive = predictive_tail if isinstance(predictive_tail, dict) else {}
+    components: dict[str, object] = {
+        "joint_total_variation": refinement.get("joint_total_variation"),
+        "log_normalizer_change": refinement.get("log_normalizer_change"),
+    }
+    for quantity in sorted(QUANTITIES):
+        raw_changes = summaries.get(quantity)
+        changes = raw_changes if isinstance(raw_changes, dict) else {}
+        for component in ("mean", "median", "interval_lower", "interval_upper"):
+            components[f"summary.{quantity}.{component}"] = changes.get(component)
+    for side in ("negative", "positive"):
+        components[f"predictive.{side}"] = predictive.get(side)
+    return {
+        "contract": {
+            "tolerance": refinement.get("tolerance"),
+            "common_grid_points": refinement.get("common_grid_points"),
+            "converged": refinement.get("converged"),
+        },
+        "component_count": len(components),
+        "components": components,
+    }
+
+
+def _numerical_regression_fingerprint(
+    primary: dict[str, Any],
+    reflection: object,
+    *,
+    runtime_versions: dict[str, Any] | None,
+) -> dict[str, object]:
+    """Return every portable posterior-regression observation in compact form."""
+    simulation = primary.get("simulation")
+    simulation_values = simulation if isinstance(simulation, dict) else {}
+    reflected = reflection if isinstance(reflection, dict) else {}
+    inferred_runtime = {
+        "python": simulation_values.get("python_version"),
+        "platform_system": simulation_values.get("platform_system"),
+        "platform_machine": simulation_values.get("platform_machine"),
+        "numpy": simulation_values.get("numpy_version"),
+        "scipy": simulation_values.get("scipy_version"),
+    }
+    runtime = inferred_runtime if runtime_versions is None else runtime_versions
+    return {
+        "runtime": runtime,
+        "primary": {
+            "schema_version": primary.get("schema_version"),
+            "package_version": primary.get("package_version"),
+            "status": primary.get("status"),
+            "method": primary.get("method"),
+            "parameterization": primary.get("parameterization"),
+            "known_nuisance": primary.get("known_nuisance"),
+            "counts": primary.get("counts"),
+            "quadrature": primary.get("quadrature"),
+            "parameters": primary.get("parameters"),
+            "posterior_mass": primary.get("posterior_mass"),
+            "identification": primary.get("identification"),
+            "refinement": _refinement_regression_fingerprint(primary.get("refinement")),
+            "warnings": primary.get("warnings"),
+            "backend": primary.get("backend"),
+            "simulation_provenance": {
+                name: simulation_values.get(name)
+                for name in (
+                    "rng_algorithm",
+                    "simulator_algorithm",
+                    "platform_system",
+                    "platform_machine",
+                    "python_version",
+                    "numpy_version",
+                    "scipy_version",
+                )
+            },
+        },
+        "reflection": {
+            name: reflected.get(name)
+            for name in (
+                "status",
+                "method",
+                "parameterization",
+                "counts",
+                "log_normalizer",
+                "parameters",
+                "identification",
+                "warnings",
+            )
+        },
+    }
+
+
+def _numerical_regression_failure(
+    reason: str,
+    primary: dict[str, Any],
+    reflection: object,
+    *,
+    runtime_versions: dict[str, Any] | None,
+) -> RuntimeError:
+    fingerprint = _numerical_regression_fingerprint(
+        primary,
+        reflection,
+        runtime_versions=runtime_versions,
+    )
+    encoded = json.dumps(fingerprint, sort_keys=True, allow_nan=False)
+    return RuntimeError(
+        f"{reason}; observed numerical regression fingerprint: {encoded}"
+    )
 
 
 def _validate_example(
@@ -2743,6 +2857,25 @@ def _validate_reflection_probe(primary: dict[str, Any], reflection: object) -> N
         raise RuntimeError("installed estimator changed warnings on reflection")
 
 
+def _validate_science_probe(
+    primary: dict[str, Any],
+    reflection: object,
+    *,
+    runtime_versions: dict[str, Any] | None,
+) -> None:
+    """Validate both fits and retain a complete observation on any failure."""
+    try:
+        _validate_example(primary, runtime_versions=runtime_versions)
+        _validate_reflection_probe(primary, reflection)
+    except RuntimeError as error:
+        raise _numerical_regression_failure(
+            str(error),
+            primary,
+            reflection,
+            runtime_versions=runtime_versions,
+        ) from error
+
+
 def _exercise_archive(
     snapshot: ArtifactSnapshot,
     *,
@@ -2811,8 +2944,11 @@ def _exercise_archive(
         versions = probe.get("versions")
         if not isinstance(versions, dict):
             raise RuntimeError("installed provenance probe omitted runtime versions")
-        _validate_example(payload, runtime_versions=versions)
-        _validate_reflection_probe(payload, science_values["reflection"])
+        _validate_science_probe(
+            payload,
+            science_values["reflection"],
+            runtime_versions=versions,
+        )
         _assert_snapshot(snapshot)
         print(
             json.dumps(
