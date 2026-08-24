@@ -1366,11 +1366,16 @@ def _refinement_diagnostics(
     refined_by_name = {summary.quantity: summary for summary in refined_summaries}
     coarse_by_name = {summary.quantity: summary for summary in coarse_summaries}
     ranges = _support_ranges(prior, design)
+    mean_changes = {
+        name: abs(base_by_name[name].mean - refined_by_name[name].mean) / ranges[name]
+        for name in ("h", "p", "tau_plus", "tau_minus")
+    }
+    mean_changes["alpha"] = mean_changes["h"]
+    mean_changes["beta"] = mean_changes["p"]
     summary_changes = tuple(
         SummaryRefinement(
             quantity=name,
-            mean=abs(base_by_name[name].mean - refined_by_name[name].mean)
-            / ranges[name],
+            mean=mean_changes[name],
             median=max(
                 abs(base_by_name[name].median - refined_by_name[name].median),
                 abs(coarse_by_name[name].median - refined_by_name[name].median),
