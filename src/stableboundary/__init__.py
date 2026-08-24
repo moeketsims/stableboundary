@@ -16,6 +16,7 @@ from ._exceptions import (
     UnidentifiedParameterError,
     ValidationError,
 )
+from .design import KnownNuisance, LocalDesign, LocalPrior, NuisanceMode
 from .parameters import LocalCoordinates, SignedTailGap, StableParams
 
 try:
@@ -26,8 +27,12 @@ except PackageNotFoundError:  # pragma: no cover - supports an uninstalled sourc
 __all__ = [
     "ConvergenceError",
     "InfiniteMomentError",
+    "KnownNuisance",
     "LocalCoordinates",
+    "LocalDesign",
+    "LocalPrior",
     "NumericalProbabilityError",
+    "NuisanceMode",
     "SignedTailGap",
     "StableBoundaryError",
     "StableParams",
