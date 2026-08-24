@@ -2,26 +2,26 @@
 
 SciPy's public ``levy_stable`` singleton exposes mutable numerical controls.
 This module never changes that singleton.  Instead, it owns a private
-``levy_stable_gen`` instance whose complete effective configuration is forced
-under a package lock before every operation and retained in backend metadata.
+generator instance, constructed from the public singleton's type, whose
+complete effective configuration is forced under a package lock before every
+operation and retained in backend metadata.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from math import isfinite
 from numbers import Integral, Real
 from threading import RLock
-from typing import Final, cast
+from typing import Final, Protocol, cast
 
 import numpy as np
 import scipy  # type: ignore[import-untyped]
 from numpy.random import Generator
 from numpy.typing import ArrayLike, NDArray
-from scipy.stats._levy_stable import (  # type: ignore[import-untyped]
-    levy_stable_gen,
-)
+from scipy.stats import levy_stable  # type: ignore[import-untyped]
 
 from stableboundary._exceptions import NumericalProbabilityError, ValidationError
 
@@ -29,6 +29,15 @@ from ._protocol import BackendMetadata, BackendResult, BackendSetting
 
 _SCIPY_LOCK = RLock()
 _QUAD_EPS: Final = 1.2e-14
+_SUPPORTED_SCIPY_MINOR: Final = (1, 18)
+_VERSION_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)"
+    r"(?:\.(?:0|[1-9]\d*))?"
+    r"(?:(?:a|b|rc)(?:0|[1-9]\d*))?"
+    r"(?:\.post(?:0|[1-9]\d*))?"
+    r"(?:\.dev(?:0|[1-9]\d*))?"
+    r"(?:\+[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*)?$"
+)
 _CANONICAL_SETTINGS: Final[tuple[tuple[str, BackendSetting], ...]] = (
     ("parameterization", "S0"),
     ("pdf_default_method", "piecewise"),
@@ -42,11 +51,70 @@ _CANONICAL_SETTINGS: Final[tuple[tuple[str, BackendSetting], ...]] = (
     ("pdf_fft_interpolation_level", 3),
     ("pdf_fft_min_points_threshold", None),
 )
-_SCIPY_S0 = levy_stable_gen(name="_stableboundary_levy_stable")
+
+
+class _ScipyStableGenerator(Protocol):
+    """Operations required from a package-owned public-generator instance."""
+
+    def cdf(self, *args: object, **kwargs: object) -> object: ...
+
+    def logpdf(self, *args: object, **kwargs: object) -> object: ...
+
+    def rvs(self, *args: object, **kwargs: object) -> object: ...
+
+
+def _require_supported_scipy(version: object) -> str:
+    """Fail closed outside the SciPy line audited for the private generator."""
+    if not isinstance(version, str) or not version.strip():
+        raise RuntimeError("SciPy must expose a nonempty version string")
+    match = _VERSION_PATTERN.fullmatch(version.strip())
+    if match is None:
+        raise RuntimeError(f"unparseable SciPy version: {version!r}")
+    release = (int(match.group("major")), int(match.group("minor")))
+    if release != _SUPPORTED_SCIPY_MINOR:
+        raise RuntimeError(
+            "stableboundary's isolated stable generator requires "
+            f"SciPy >=1.18,<1.19; found {version!r}"
+        )
+    return version.strip()
+
+
+def _new_private_generator() -> _ScipyStableGenerator:
+    """Construct and verify an isolated generator through SciPy's public object."""
+    generator_type = type(levy_stable)
+    try:
+        candidate = generator_type(name="_stableboundary_levy_stable")
+    except Exception as error:  # pragma: no cover - SciPy compatibility guard
+        raise RuntimeError(
+            "SciPy's public levy_stable generator type cannot be instantiated"
+        ) from error
+    required_operations = ("cdf", "logpdf", "rvs")
+    if candidate is levy_stable or any(
+        not callable(getattr(candidate, name, None)) for name in required_operations
+    ):
+        raise RuntimeError(
+            "SciPy's public levy_stable generator type is incompatible with "
+            "stableboundary"
+        )
+    try:
+        for name, value in _CANONICAL_SETTINGS:
+            setattr(candidate, name, value)
+            if getattr(candidate, name) != value:
+                raise RuntimeError(f"SciPy stable setting {name!r} was not retained")
+    except Exception as error:  # pragma: no cover - SciPy compatibility guard
+        raise RuntimeError(
+            "SciPy's public levy_stable generator does not expose the required "
+            "numerical settings"
+        ) from error
+    return cast(_ScipyStableGenerator, candidate)
+
+
+_SCIPY_VERSION: Final = _require_supported_scipy(scipy.__version__)
+_SCIPY_S0 = _new_private_generator()
 
 
 @contextmanager
-def _canonical_s0_generator() -> Iterator[levy_stable_gen]:
+def _canonical_s0_generator() -> Iterator[_ScipyStableGenerator]:
     """Yield the locked package-owned generator in its canonical state."""
     with _SCIPY_LOCK:
         for name, value in _CANONICAL_SETTINGS:
@@ -67,7 +135,10 @@ def _numeric_array(name: str, value: ArrayLike) -> NDArray[np.float64]:
 def _finite_real(name: str, value: float) -> float:
     if isinstance(value, bool) or not isinstance(value, Real):
         raise ValidationError(f"{name} must be a real number")
-    result = float(value)
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValidationError(f"{name} must be finite") from error
     if not isfinite(result):
         raise ValidationError(f"{name} must be finite")
     return result
@@ -89,12 +160,14 @@ def _input_context(
 class ScipyS0Backend:
     """Guarded bootstrap backend using SciPy's piecewise Nolan method."""
 
+    __slots__ = ()
+
     _metadata: Final = BackendMetadata(
         method="scipy-piecewise-s0-direct-log-tails",
         tolerance=_QUAD_EPS,
         parameterization="S0",
         library="scipy",
-        library_version=scipy.__version__,
+        library_version=_SCIPY_VERSION,
         effective_settings=_CANONICAL_SETTINGS,
     )
 
