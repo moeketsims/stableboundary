@@ -1883,6 +1883,39 @@ def test_raw_installed_distribution_is_authenticated_before_import(
     assert installed.site_packages == _test_site_packages(environment).resolve()
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    ["extra-archive-field", "missing-legacy-hash", "extra-hash-algorithm"],
+)
+def test_direct_url_requires_exact_nested_provenance(
+    tmp_path: Path, mutation: str
+) -> None:
+    artifact = tmp_path / smoke_wheel.EXPECTED_WHEEL
+    digest = "a" * 64
+    direct_url: dict[str, object] = {
+        "archive_info": {
+            "hash": f"sha256={digest}",
+            "hashes": {"sha256": digest},
+        },
+        "url": artifact.resolve().as_uri(),
+    }
+    archive_info = direct_url["archive_info"]
+    assert isinstance(archive_info, dict)
+    if mutation == "extra-archive-field":
+        archive_info["subdirectory"] = "../../outside"
+    elif mutation == "missing-legacy-hash":
+        del archive_info["hash"]
+    else:
+        hashes = archive_info["hashes"]
+        assert isinstance(hashes, dict)
+        hashes["md5"] = "contradictory"
+
+    with pytest.raises(RuntimeError, match="malformed direct_url.json"):
+        smoke_wheel._validate_direct_url(
+            direct_url, artifact=artifact, expected_digest=digest
+        )
+
+
 def _test_artifact_snapshot(path: Path, digest: str) -> smoke_wheel.ArtifactSnapshot:
     return smoke_wheel.ArtifactSnapshot(
         source_name=smoke_wheel.EXPECTED_WHEEL,

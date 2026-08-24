@@ -1187,16 +1187,19 @@ def _validate_direct_url(
             f"{installed_from} != {artifact.resolve()}"
         )
 
-    archive_info = direct_url["archive_info"]
-    if not isinstance(archive_info, dict):
-        raise RuntimeError("installed direct_url.json has invalid archive_info")
-    hashes = archive_info.get("hashes")
-    if not isinstance(hashes, dict) or hashes.get("sha256") != expected_digest:
+    archive_info = _require_keys(
+        "direct_url.json archive_info",
+        direct_url["archive_info"],
+        {"hash", "hashes"},
+    )
+    hashes = _require_keys(
+        "direct_url.json archive hashes", archive_info["hashes"], {"sha256"}
+    )
+    if hashes["sha256"] != expected_digest:
         raise RuntimeError(
             "installed direct_url.json does not retain the artifact hash"
         )
-    legacy_hash = archive_info.get("hash")
-    if legacy_hash is not None and legacy_hash != f"sha256={expected_digest}":
+    if archive_info["hash"] != f"sha256={expected_digest}":
         raise RuntimeError("installed direct_url.json reports a contradictory hash")
 
 
