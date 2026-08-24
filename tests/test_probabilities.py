@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import FrozenInstanceError
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -106,6 +107,20 @@ def test_backend_is_runtime_checkable_and_metadata_is_immutable() -> None:
         backend._metadata = BackendMetadata(  # type: ignore[misc]
             method="mutated",
             tolerance=1e-6,
+        )
+
+
+def test_backend_metadata_wraps_overflowing_real_conversions() -> None:
+    with pytest.raises(ValidationError, match="tolerance"):
+        BackendMetadata(
+            method="overflowing-tolerance",
+            tolerance=Fraction(10**10_000, 1),  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValidationError, match="effective setting values"):
+        BackendMetadata(
+            method="overflowing-setting",
+            tolerance=1e-12,
+            effective_settings=(("huge", 10**10_000),),
         )
 
 

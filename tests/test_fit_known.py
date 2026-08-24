@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError, fields, replace
+from fractions import Fraction
+
 import numpy as np
 import pytest
 from numpy.typing import ArrayLike
 from scipy.optimize import brentq  # type: ignore[import-untyped]
 
 import stableboundary.posterior as posterior_module
-from stableboundary import KnownNuisanceFit, fit_known_nuisance
+from stableboundary import KnownNuisanceFit, PosteriorGrid, fit_known_nuisance
 from stableboundary._exceptions import ConvergenceError, ValidationError
 from stableboundary.backends import BackendMetadata, ScipyS0Backend
 from stableboundary.cells import CellCounts
@@ -86,6 +89,29 @@ class _FailIfCalledBackend(_AnalyticBackend):
         raise AssertionError("backend must not run for mismatched provenance")
 
 
+class _MetadataMutatingBackend(_AnalyticBackend):
+    def __init__(self, final_metadata: BackendMetadata) -> None:
+        self._current_metadata = self._test_metadata
+        self._final_metadata = final_metadata
+
+    @property
+    def metadata(self) -> BackendMetadata:
+        return self._current_metadata
+
+    def logsf(
+        self,
+        x: ArrayLike,
+        alpha: ArrayLike,
+        beta: ArrayLike,
+        *,
+        loc: float = 0.0,
+        scale: float = 1.0,
+    ) -> object:
+        result = super().logsf(x, alpha, beta, loc=loc, scale=scale)
+        self._current_metadata = self._final_metadata
+        return result
+
+
 def _counts(design: LocalDesign) -> CellCounts:
     observations = np.zeros(design.n)
     observations[:2] = design.threshold + 1.0
@@ -115,6 +141,18 @@ def test_exact_grid_is_normalized_read_only_and_reproducible() -> None:
     assert first.prior is prior
     assert first.counts.design is design
     assert first.counts.nuisance.provenance == "test"
+    for retained in (
+        first.h_nodes,
+        first.p_nodes,
+        first.mass,
+        first.q_minus,
+        first.q_plus,
+    ):
+        with pytest.raises(ValueError, match="WRITEABLE flag"):
+            retained.setflags(write=True)
+    derived = first.values("alpha")
+    with pytest.raises(ValueError, match="WRITEABLE flag"):
+        derived.setflags(write=True)
 
 
 def test_exact_posterior_rejects_cross_design_counts_before_backend_calls() -> None:
@@ -149,6 +187,41 @@ def test_exact_posterior_rejects_structurally_valid_s1_backend() -> None:
             design,
             LocalPrior.default(design),
             backend=_S1AnalyticBackend(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("final_metadata", "message"),
+    [
+        (
+            BackendMetadata(method="mutated-method", tolerance=1e-14),
+            "metadata changed during posterior inference",
+        ),
+        (
+            BackendMetadata(method="analytic-test-cells", tolerance=2e-14),
+            "metadata changed during posterior inference",
+        ),
+        (
+            BackendMetadata(
+                method="analytic-test-cells",
+                tolerance=1e-14,
+                parameterization="S1",
+            ),
+            "parameterization.*S0",
+        ),
+    ],
+)
+def test_exact_posterior_revalidates_backend_metadata_after_all_evaluation(
+    final_metadata: BackendMetadata,
+    message: str,
+) -> None:
+    design = LocalDesign.from_sample_size(32)
+    with pytest.raises(ValidationError, match=message):
+        compute_exact_posterior(
+            _counts(design),
+            design,
+            LocalPrior.default(design),
+            backend=_MetadataMutatingBackend(final_metadata),
         )
 
 
@@ -321,6 +394,7 @@ def test_exact_quadrature_defaults_are_the_declared_accuracy_policy() -> None:
         ("refinement_tolerance", True),
         ("refinement_tolerance", "0.1"),
         ("refinement_tolerance", 1 + 0j),
+        ("refinement_tolerance", Fraction(10**10_000, 1)),
         ("interval_mass", False),
         ("interval_mass", "0.9"),
         ("interval_mass", 0.9 + 0j),
@@ -388,6 +462,66 @@ def test_fit_known_returns_finite_six_quantity_summary_and_json_audit(
     assert set(environment) == {"python", "numpy", "scipy", "stableboundary"}
     assert all(isinstance(value, str) and value for value in environment.values())
     assert fit.audit_record()["backend"]["origin"] == "custom"  # type: ignore[index]
+
+    captured_audit = fit.audit_record()
+    monkeypatch.setattr(posterior_module, "python_version", lambda: "post-fit-python")
+    monkeypatch.setattr(posterior_module.np, "__version__", "post-fit-numpy")
+    monkeypatch.setattr(posterior_module.scipy, "__version__", "post-fit-scipy")
+    monkeypatch.setattr(
+        posterior_module,
+        "_package_version",
+        lambda: "post-fit-stableboundary",
+    )
+    assert fit.audit_record() == captured_audit
+
+
+def test_posterior_construction_rebinding_and_internal_forgery_are_rejected() -> None:
+    with pytest.raises(TypeError, match="compute_exact_posterior"):
+        PosteriorGrid()
+
+    design = LocalDesign.from_sample_size(32)
+    prior = LocalPrior.default(design)
+    counts = _counts(design)
+    posterior = compute_exact_posterior(
+        counts,
+        design,
+        prior,
+        backend=_AnalyticBackend(),
+    )
+    values = np.zeros(design.n)
+    values[0] = design.threshold + 1.0
+    alternate_counts = CellCounts.from_observations(
+        values,
+        nuisance=counts.nuisance,
+        design=design,
+    )
+    alternate_prior = LocalPrior(design=design, h_max=3.5)
+    alternate_backend = BackendMetadata(method="forged", tolerance=1e-9)
+    for field_name, alternate in (
+        ("counts", alternate_counts),
+        ("prior", alternate_prior),
+        ("backend_metadata", alternate_backend),
+    ):
+        with pytest.raises(FrozenInstanceError):
+            setattr(posterior, field_name, alternate)
+        with pytest.raises(TypeError, match="compute_exact_posterior"):
+            replace(posterior, **{field_name: alternate})
+
+    components = {
+        item.name: getattr(posterior, item.name) for item in fields(posterior)
+    }
+    forged_nodes = np.array(posterior.h_nodes, copy=True)
+    forged_nodes[0, 0] = prior.h_max
+    with pytest.raises(ConvergenceError, match="nodes do not match"):
+        PosteriorGrid._from_components(
+            **(components | {"h_nodes": forged_nodes})  # type: ignore[arg-type]
+        )
+    forged_mass = np.zeros_like(posterior.mass)
+    forged_mass[0, 0] = 1.0
+    with pytest.raises(ConvergenceError, match="mean does not match"):
+        PosteriorGrid._from_components(
+            **(components | {"mass": forged_mass})  # type: ignore[arg-type]
+        )
 
 
 def test_fit_construction_is_package_controlled_and_rejects_false_composition() -> None:
