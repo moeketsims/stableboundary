@@ -135,7 +135,10 @@
     "simulator_algorithm": "scipy.stats.levy_stable.rvs:S0:private-generator:v1",
     "canonical_dtype": "<f8",
     "approved_environments": {
-      "numpy=2.2.0|scipy=1.18.0": {
+      "system=Windows|machine=AMD64|numpy=2.2.0|scipy=1.18.0": {
+        "platform_system": "Windows",
+        "platform_machine": "AMD64",
+        "observed_python_version": "3.12.13",
         "dtype": "<f8",
         "sample_sha256": "a39752ae90a9c69e8ff07982e47f8d191bc5ce8d776c7499c364abbcaeab74cb",
       "counts": {
@@ -146,7 +149,10 @@
       "minimum": -12.046204723023758,
       "maximum": 9.384903377918656
     },
-      "numpy=2.2.0|scipy=1.18.1": {
+      "system=Windows|machine=AMD64|numpy=2.2.0|scipy=1.18.1": {
+        "platform_system": "Windows",
+        "platform_machine": "AMD64",
+        "observed_python_version": "3.12.13",
         "dtype": "<f8",
         "sample_sha256": "a39752ae90a9c69e8ff07982e47f8d191bc5ce8d776c7499c364abbcaeab74cb",
         "counts": {
@@ -157,7 +163,10 @@
         "minimum": -12.046204723023758,
         "maximum": 9.384903377918656
       },
-      "numpy=2.5.2|scipy=1.18.0": {
+      "system=Windows|machine=AMD64|numpy=2.5.2|scipy=1.18.0": {
+        "platform_system": "Windows",
+        "platform_machine": "AMD64",
+        "observed_python_version": "3.13.14",
         "dtype": "<f8",
         "sample_sha256": "a39752ae90a9c69e8ff07982e47f8d191bc5ce8d776c7499c364abbcaeab74cb",
         "counts": {
@@ -168,7 +177,10 @@
         "minimum": -12.046204723023758,
         "maximum": 9.384903377918656
       },
-      "numpy=2.5.2|scipy=1.18.1": {
+      "system=Windows|machine=AMD64|numpy=2.5.2|scipy=1.18.1": {
+        "platform_system": "Windows",
+        "platform_machine": "AMD64",
+        "observed_python_version": "3.14.7",
         "dtype": "<f8",
       "sample_sha256": "a39752ae90a9c69e8ff07982e47f8d191bc5ce8d776c7499c364abbcaeab74cb",
       "counts": {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import platform
 from typing import Any
 
 import numpy as np
@@ -90,6 +91,9 @@ def run_example() -> dict[str, Any]:
             "simulator_algorithm": (
                 "scipy.stats.levy_stable.rvs:S0:private-generator:v1"
             ),
+            "platform_system": platform.system(),
+            "platform_machine": platform.machine(),
+            "python_version": platform.python_version(),
             "numpy_version": np.__version__,
             "scipy_version": audit["backend"]["library_version"],
             "sample_sha256": hashlib.sha256(simulation_bytes).hexdigest(),

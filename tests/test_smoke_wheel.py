@@ -159,7 +159,7 @@ def _valid_payload() -> dict[str, object]:
     assert isinstance(contract, dict)
     approved = contract["approved_environments"]
     assert isinstance(approved, dict)
-    environment = approved["numpy=2.5.2|scipy=1.18.1"]
+    environment = approved["system=Windows|machine=AMD64|numpy=2.5.2|scipy=1.18.1"]
     assert isinstance(environment, dict)
     reference_parameters = oracle["parameters"]
     assert isinstance(reference_parameters, dict)
@@ -194,6 +194,9 @@ def _valid_payload() -> dict[str, object]:
             "dtype": environment["dtype"],
             "rng_algorithm": contract["rng_algorithm"],
             "simulator_algorithm": contract["simulator_algorithm"],
+            "platform_system": "Windows",
+            "platform_machine": "AMD64",
+            "python_version": "3.14.7",
             "numpy_version": "2.5.2",
             "scipy_version": "1.18.1",
             "sample_sha256": environment["sample_sha256"],
@@ -231,6 +234,16 @@ def _valid_payload() -> dict[str, object]:
             },
         },
         "warnings": copy.deepcopy(oracle["warnings"]),
+    }
+
+
+def _valid_runtime_versions() -> dict[str, str]:
+    return {
+        "python": "3.14.7",
+        "platform_system": "Windows",
+        "platform_machine": "AMD64",
+        "numpy": "2.5.2",
+        "scipy": "1.18.1",
     }
 
 
@@ -680,7 +693,7 @@ def test_installed_payload_requires_exact_finite_cell_method() -> None:
 def test_oracle_backed_payload_passes_full_scientific_validation() -> None:
     smoke_wheel._validate_example(
         _valid_payload(),
-        runtime_versions={"numpy": "2.5.2", "scipy": "1.18.1"},
+        runtime_versions=_valid_runtime_versions(),
     )
 
 
@@ -766,9 +779,14 @@ def test_installed_payload_rejects_scientific_contract_changes(
 
 @pytest.mark.parametrize(
     ("field", "bad_value"),
-    [("numpy_version", "2.4.0"), ("scipy_version", "1.18.2")],
+    [
+        ("numpy_version", "2.4.0"),
+        ("scipy_version", "1.18.2"),
+        ("platform_system", "Darwin"),
+        ("platform_machine", "arm64"),
+    ],
 )
-def test_installed_payload_rejects_unknown_numpy_scipy_combinations(
+def test_installed_payload_rejects_unknown_platform_dependency_combinations(
     field: str, bad_value: str
 ) -> None:
     payload = _valid_payload()
@@ -778,6 +796,34 @@ def test_installed_payload_rejects_unknown_numpy_scipy_combinations(
 
     with pytest.raises(RuntimeError, match="environment is not approved"):
         smoke_wheel._validate_example(payload)
+
+
+def test_simulation_mismatch_reports_complete_observed_fingerprint() -> None:
+    payload = _valid_payload()
+    simulation = payload["simulation"]
+    assert isinstance(simulation, dict)
+    simulation["sample_sha256"] = "f" * 64
+
+    with pytest.raises(RuntimeError, match="approved reference") as captured:
+        smoke_wheel._validate_example(payload)
+
+    message = str(captured.value)
+    for required in (
+        '"sample_sha256": "ffffffff',
+        '"counts": {',
+        '"minimum": -12.046204723023758',
+        '"maximum": 9.384903377918656',
+        '"system": "Windows"',
+        '"machine": "AMD64"',
+        '"python": "3.14.7"',
+        '"numpy": "2.5.2"',
+        '"scipy": "1.18.1"',
+        '"rng_algorithm": "numpy.random.PCG64"',
+        '"simulator_algorithm": "scipy.stats.levy_stable.rvs:S0:private-generator:v1"',
+        '"seed": 20260824',
+        '"truth": {',
+    ):
+        assert required in message
 
 
 def test_installed_payload_rejects_three_point_fake_simulator() -> None:
@@ -804,10 +850,12 @@ def test_installed_payload_rejects_non_stable_simulator_algorithm() -> None:
 
 
 def test_installed_payload_rejects_stale_independently_imported_versions() -> None:
+    stale_versions = _valid_runtime_versions()
+    stale_versions["scipy"] = "1.18.0"
     with pytest.raises(RuntimeError, match="contradicts independent imports"):
         smoke_wheel._validate_example(
             _valid_payload(),
-            runtime_versions={"numpy": "2.5.2", "scipy": "1.18.0"},
+            runtime_versions=stale_versions,
         )
 
 
@@ -1209,10 +1257,10 @@ def test_oracle_approves_only_measured_numpy_scipy_combinations() -> None:
     approved = document["simulation_contract"]["approved_environments"]
 
     assert set(approved) == {
-        "numpy=2.2.0|scipy=1.18.0",
-        "numpy=2.2.0|scipy=1.18.1",
-        "numpy=2.5.2|scipy=1.18.0",
-        "numpy=2.5.2|scipy=1.18.1",
+        "system=Windows|machine=AMD64|numpy=2.2.0|scipy=1.18.0",
+        "system=Windows|machine=AMD64|numpy=2.2.0|scipy=1.18.1",
+        "system=Windows|machine=AMD64|numpy=2.5.2|scipy=1.18.0",
+        "system=Windows|machine=AMD64|numpy=2.5.2|scipy=1.18.1",
     }
 
 
@@ -1293,6 +1341,8 @@ def _valid_distribution_probe(artifact: Path, origin: Path) -> dict[str, object]
         "package_version": smoke_wheel.PROJECT_VERSION,
         "versions": {
             "python": "3.14.7",
+            "platform_system": "Windows",
+            "platform_machine": "AMD64",
             "numpy": "2.5.2",
             "scipy": "1.18.1",
             "stableboundary": smoke_wheel.PROJECT_VERSION,

@@ -899,11 +899,18 @@ def _validate_installed_distribution(
     versions = _require_keys(
         "installed runtime versions",
         values["versions"],
-        {"python", "numpy", "scipy", PROJECT_NAME},
+        {
+            "python",
+            "numpy",
+            "scipy",
+            "platform_system",
+            "platform_machine",
+            PROJECT_NAME,
+        },
     )
     if versions[PROJECT_NAME] != PROJECT_VERSION:
         raise RuntimeError("installed package runtime version is stale")
-    for name in ("python", "numpy", "scipy"):
+    for name in ("python", "numpy", "scipy", "platform_system", "platform_machine"):
         if not isinstance(versions[name], str) or not versions[name].strip():
             raise RuntimeError(f"installed {name} runtime version is invalid")
     python_match = re.fullmatch(
@@ -1005,6 +1012,8 @@ print(json.dumps({
     "package_version": stableboundary.__version__,
     "versions": {
         "python": platform.python_version(),
+        "platform_system": platform.system(),
+        "platform_machine": platform.machine(),
         "numpy": numpy.__version__,
         "scipy": scipy.__version__,
         "stableboundary": stableboundary.__version__,
@@ -1064,6 +1073,7 @@ def _installed_science_probe(
     source = r"""
 import hashlib
 import json
+import platform
 
 import numpy as np
 import stableboundary as sb
@@ -1139,6 +1149,9 @@ payload = {
             f"{np.random.default_rng(seed).bit_generator.__class__.__name__}"
         ),
         "simulator_algorithm": "scipy.stats.levy_stable.rvs:S0:private-generator:v1",
+        "platform_system": platform.system(),
+        "platform_machine": platform.machine(),
+        "python_version": platform.python_version(),
         "numpy_version": np.__version__,
         "scipy_version": audit["backend"]["library_version"],
         "sample_sha256": hashlib.sha256(simulation_bytes).hexdigest(),
@@ -1590,6 +1603,11 @@ def _validate_refinement(
         )
 
 
+def _simulation_failure(reason: str, fingerprint: dict[str, object]) -> RuntimeError:
+    encoded = json.dumps(fingerprint, sort_keys=True, allow_nan=False)
+    return RuntimeError(f"{reason}; observed simulation fingerprint: {encoded}")
+
+
 def _validate_example(
     payload: dict[str, Any],
     *,
@@ -1774,6 +1792,9 @@ def _validate_example(
             "dtype",
             "rng_algorithm",
             "simulator_algorithm",
+            "platform_system",
+            "platform_machine",
+            "python_version",
             "numpy_version",
             "scipy_version",
             "sample_sha256",
@@ -1795,38 +1816,6 @@ def _validate_example(
             "approved_environments",
         },
     )
-    if (
-        contract["sample_size"] != 5_000
-        or contract["seed"] != payload["seed"]
-        or contract["truth_rule"] != "alpha=2-design.r*1.5,beta=0.35,loc=0,scale=1"
-        or simulation["dtype"] != contract["canonical_dtype"]
-        or simulation["rng_algorithm"] != contract["rng_algorithm"]
-        or simulation["simulator_algorithm"] != contract["simulator_algorithm"]
-    ):
-        raise RuntimeError("installed simulation changed its fixed algorithm contract")
-    numpy_version = simulation["numpy_version"]
-    scipy_version = simulation["scipy_version"]
-    if not isinstance(numpy_version, str) or not isinstance(scipy_version, str):
-        raise RuntimeError("installed simulation returned invalid runtime versions")
-    if runtime_versions is not None and (
-        runtime_versions.get("numpy") != numpy_version
-        or runtime_versions.get("scipy") != scipy_version
-    ):
-        raise RuntimeError(
-            "installed simulation runtime contradicts independent imports"
-        )
-    environment_key = f"numpy={numpy_version}|scipy={scipy_version}"
-    approved = contract["approved_environments"]
-    if not isinstance(approved, dict) or environment_key not in approved:
-        raise RuntimeError(
-            f"installed simulation environment is not approved: {environment_key}"
-        )
-    expected_simulation = approved[environment_key]
-    expected_simulation_values = _require_keys(
-        "approved simulation evidence",
-        expected_simulation,
-        {"dtype", "sample_sha256", "counts", "minimum", "maximum"},
-    )
     simulation_counts = _require_keys(
         "simulation cell counts",
         simulation["counts"],
@@ -1836,19 +1825,127 @@ def _validate_example(
         name: _strict_nonnegative_int(f"simulation count {name}", value)
         for name, value in simulation_counts.items()
     }
+    minimum = _finite_float("simulation minimum", simulation["minimum"])
+    maximum = _finite_float("simulation maximum", simulation["maximum"])
+    text_fields = (
+        "dtype",
+        "rng_algorithm",
+        "simulator_algorithm",
+        "platform_system",
+        "platform_machine",
+        "python_version",
+        "numpy_version",
+        "scipy_version",
+        "sample_sha256",
+    )
+    for name in text_fields:
+        if not isinstance(simulation[name], str) or not simulation[name].strip():
+            raise RuntimeError(f"installed simulation returned invalid {name}")
+    fingerprint: dict[str, object] = {
+        "seed": payload["seed"],
+        "truth": truth,
+        "dtype": simulation["dtype"],
+        "rng_algorithm": simulation["rng_algorithm"],
+        "simulator_algorithm": simulation["simulator_algorithm"],
+        "sample_sha256": simulation["sample_sha256"],
+        "counts": validated_simulation_counts,
+        "minimum": minimum,
+        "maximum": maximum,
+        "platform": {
+            "system": simulation["platform_system"],
+            "machine": simulation["platform_machine"],
+        },
+        "versions": {
+            "python": simulation["python_version"],
+            "numpy": simulation["numpy_version"],
+            "scipy": simulation["scipy_version"],
+        },
+    }
+    if (
+        contract["sample_size"] != 5_000
+        or contract["seed"] != payload["seed"]
+        or contract["truth_rule"] != "alpha=2-design.r*1.5,beta=0.35,loc=0,scale=1"
+        or simulation["dtype"] != contract["canonical_dtype"]
+        or simulation["rng_algorithm"] != contract["rng_algorithm"]
+        or simulation["simulator_algorithm"] != contract["simulator_algorithm"]
+    ):
+        raise _simulation_failure(
+            "installed simulation changed its fixed algorithm contract", fingerprint
+        )
     if sum(validated_simulation_counts.values()) != contract["sample_size"]:
-        raise RuntimeError("installed simulation counts have the wrong sample size")
-    for name in ("dtype", "sample_sha256"):
-        if simulation[name] != expected_simulation_values[name]:
-            raise RuntimeError(f"installed simulation changed approved {name}")
-    if validated_simulation_counts != expected_simulation_values["counts"]:
-        raise RuntimeError("installed simulation changed approved counts")
-    for name in ("minimum", "maximum"):
-        _reference_close(
-            f"simulation {name}",
-            simulation[name],
-            expected_simulation_values[name],
-            tolerance=0.0,
+        raise _simulation_failure(
+            "installed simulation counts have the wrong sample size", fingerprint
+        )
+    platform_system = simulation["platform_system"]
+    platform_machine = simulation["platform_machine"]
+    python_version = simulation["python_version"]
+    numpy_version = simulation["numpy_version"]
+    scipy_version = simulation["scipy_version"]
+    if runtime_versions is not None and (
+        runtime_versions.get("python") != python_version
+        or runtime_versions.get("numpy") != numpy_version
+        or runtime_versions.get("scipy") != scipy_version
+        or runtime_versions.get("platform_system") != platform_system
+        or runtime_versions.get("platform_machine") != platform_machine
+    ):
+        raise _simulation_failure(
+            "installed simulation runtime contradicts independent imports",
+            fingerprint,
+        )
+    environment_key = (
+        f"system={platform_system}|machine={platform_machine}|"
+        f"numpy={numpy_version}|scipy={scipy_version}"
+    )
+    approved = contract["approved_environments"]
+    if not isinstance(approved, dict) or environment_key not in approved:
+        raise _simulation_failure(
+            f"installed simulation environment is not approved: {environment_key}",
+            fingerprint,
+        )
+    expected_simulation = approved[environment_key]
+    expected_simulation_values = _require_keys(
+        "approved simulation evidence",
+        expected_simulation,
+        {
+            "platform_system",
+            "platform_machine",
+            "observed_python_version",
+            "dtype",
+            "sample_sha256",
+            "counts",
+            "minimum",
+            "maximum",
+        },
+    )
+    mismatches = {
+        "platform_system": (
+            platform_system,
+            expected_simulation_values["platform_system"],
+        ),
+        "platform_machine": (
+            platform_machine,
+            expected_simulation_values["platform_machine"],
+        ),
+        "dtype": (simulation["dtype"], expected_simulation_values["dtype"]),
+        "sample_sha256": (
+            simulation["sample_sha256"],
+            expected_simulation_values["sample_sha256"],
+        ),
+        "counts": (
+            validated_simulation_counts,
+            expected_simulation_values["counts"],
+        ),
+        "minimum": (minimum, expected_simulation_values["minimum"]),
+        "maximum": (maximum, expected_simulation_values["maximum"]),
+    }
+    changed = sorted(
+        name for name, (actual, expected) in mismatches.items() if actual != expected
+    )
+    if changed:
+        raise _simulation_failure(
+            "installed simulation differs from its approved reference in "
+            + ", ".join(changed),
+            fingerprint,
         )
 
     prior = _require_keys(

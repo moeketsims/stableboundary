@@ -94,11 +94,15 @@ refinement evidence, identification diagnostics, and warnings. The signed gaps
 probabilities.
 
 The artifact smoke test accepts simulated evidence only for explicitly measured
-NumPy/SciPy combinations; an unknown patch combination fails closed. Posterior
-summaries are bound both to retained regression values and to a higher-order
-reference generated without importing `stableboundary`. These checks make the
-artifact reproducible and sensitive to stale or hard-coded output, but they do
-not turn ordinary floating-point calculations into a proof certificate.
+operating-system, machine-architecture, NumPy, and SciPy combinations; an
+unknown combination fails closed. A rejection prints the complete observed
+fingerprint, including Python and dependency versions, algorithms, hash,
+counts, and extrema, so a maintainer can review rather than blindly loosen the
+check. Posterior summaries are bound both to retained regression values and to
+a higher-order reference generated without importing `stableboundary`. These
+checks make the artifact reproducible and sensitive to stale or hard-coded
+output, but they do not turn ordinary floating-point calculations into a proof
+certificate.
 
 ## Maintainer checks
 
@@ -125,8 +129,9 @@ The oracle regeneration command independently evaluates the exact `S0`
 three-cell likelihood with 48- and 64-node tensor Gauss--Legendre rules and
 cross-checks selected cell probabilities by direct Gil--Pelaez Fourier
 inversion. The generator imports NumPy and SciPy but is forbidden by test from
-importing `stableboundary`. Review and explicitly approve any new NumPy/SciPy
-simulation key and its sample hash before updating `scripts/artifact_oracle.json`;
+importing `stableboundary`. Review and explicitly approve any new
+platform/architecture/NumPy/SciPy simulation key and its sample hash only after
+checking its counts and extrema before updating `scripts/artifact_oracle.json`;
 the smoke verifier intentionally rejects unmeasured combinations.
 
 ## Current limitations
