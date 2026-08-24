@@ -7,6 +7,7 @@ import csv
 import io
 import math
 import os
+import stat
 import subprocess
 import sys
 import tarfile
@@ -994,20 +995,49 @@ def test_artifact_install_separates_dependencies_and_uses_no_deps(
 
     smoke_wheel._install_archive(Path("python"), artifact, cwd=tmp_path)
 
-    assert len(calls) == 3
+    assert len(calls) == 4
     assert "numpy>=2.2" in calls[0]
     assert "scipy>=1.18,<1.19" in calls[0]
     assert not any("stableboundary" in argument for argument in calls[0])
     assert "find_spec('stableboundary') is None" in calls[1][-1]
     assert "--no-deps" in calls[2]
     assert calls[2][-1] == str(artifact)
+    assert calls[3][-3:] == ["pip", "check", "--disable-pip-version-check"]
+
+
+def test_artifact_install_fails_closed_when_pip_check_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_check(command: list[str], **kwargs: object) -> str:
+        del kwargs
+        if "check" in command:
+            raise RuntimeError("dependency graph is inconsistent")
+        return ""
+
+    monkeypatch.setattr(smoke_wheel, "_run", fail_check)
+    artifact = tmp_path / smoke_wheel.EXPECTED_WHEEL
+    artifact.touch()
+
+    with pytest.raises(RuntimeError, match="dependency graph"):
+        smoke_wheel._install_archive(Path("python"), artifact, cwd=tmp_path)
 
 
 def _valid_distribution_probe(artifact: Path, origin: Path) -> dict[str, object]:
     digest = sha256(artifact.read_bytes()).hexdigest()
+    source_digest = sha256(origin.read_bytes()).hexdigest()
     return {
         "import_origin": str(origin),
         "metadata_version": smoke_wheel.PROJECT_VERSION,
+        "package_version": smoke_wheel.PROJECT_VERSION,
+        "versions": {
+            "python": "3.14.7",
+            "numpy": "2.5.2",
+            "scipy": "1.18.1",
+            "stableboundary": smoke_wheel.PROJECT_VERSION,
+        },
+        "package_files": {
+            "__init__.py": {"size": origin.stat().st_size, "sha256": source_digest}
+        },
         "direct_url": {
             "url": artifact.resolve().as_uri(),
             "archive_info": {
@@ -1016,6 +1046,11 @@ def _valid_distribution_probe(artifact: Path, origin: Path) -> dict[str, object]
             },
         },
     }
+
+
+def _test_package_manifest(origin: Path) -> dict[str, smoke_wheel.FileIdentity]:
+    content = origin.read_bytes()
+    return {"__init__.py": smoke_wheel._file_identity(content)}
 
 
 def test_installed_distribution_requires_exact_artifact_provenance(
@@ -1032,6 +1067,8 @@ def test_installed_distribution_requires_exact_artifact_provenance(
         _valid_distribution_probe(artifact, origin),
         artifact=artifact,
         environment=environment,
+        expected_digest=sha256(artifact.read_bytes()).hexdigest(),
+        package_files=_test_package_manifest(origin),
     )
 
     assert selected == origin.resolve()
@@ -1053,6 +1090,8 @@ def test_installed_distribution_decodes_artifact_url_exactly_once(
         _valid_distribution_probe(artifact, origin),
         artifact=artifact,
         environment=environment,
+        expected_digest=sha256(artifact.read_bytes()).hexdigest(),
+        package_files=_test_package_manifest(origin),
     )
 
     assert selected == origin.resolve()
@@ -1088,7 +1127,80 @@ def test_installed_distribution_rejects_substituted_artifact(
             probe,
             artifact=artifact,
             environment=environment,
+            expected_digest=sha256(artifact.read_bytes()).hexdigest(),
+            package_files=_test_package_manifest(origin),
         )
+
+
+@pytest.mark.parametrize(
+    ("container", "field", "bad_value"),
+    [
+        ("versions", "stableboundary", "0.0.0"),
+        ("versions", "python", "3.11.9"),
+        ("versions", "scipy", "1.19.0"),
+        ("package_files", "__init__.py", {"size": 0, "sha256": "0" * 64}),
+    ],
+)
+def test_installed_distribution_rejects_stale_runtime_or_source(
+    tmp_path: Path,
+    container: str,
+    field: str,
+    bad_value: object,
+) -> None:
+    environment = tmp_path / "venv"
+    origin = environment / "site-packages" / "stableboundary" / "__init__.py"
+    origin.parent.mkdir(parents=True)
+    origin.write_text("trusted = True\n", encoding="utf-8")
+    artifact = tmp_path / smoke_wheel.EXPECTED_WHEEL
+    artifact.write_bytes(b"artifact")
+    probe = _valid_distribution_probe(artifact, origin)
+    selected = probe[container]
+    assert isinstance(selected, dict)
+    selected[field] = bad_value
+
+    with pytest.raises(RuntimeError):
+        smoke_wheel._validate_installed_distribution(
+            probe,
+            artifact=artifact,
+            environment=environment,
+            expected_digest=sha256(artifact.read_bytes()).hexdigest(),
+            package_files=_test_package_manifest(origin),
+        )
+
+
+def test_artifact_snapshot_isolated_from_original_path_replacement(
+    tmp_path: Path,
+) -> None:
+    wheel = tmp_path / smoke_wheel.EXPECTED_WHEEL
+    sdist = tmp_path / smoke_wheel.EXPECTED_SDIST
+    wheel.write_bytes(b"trusted wheel")
+    sdist.write_bytes(b"trusted sdist")
+
+    with smoke_wheel._artifact_snapshots(wheel, sdist) as snapshots:
+        wheel_snapshot, sdist_snapshot = snapshots
+        wheel.write_bytes(b"replacement wheel")
+        sdist.write_bytes(b"replacement sdist")
+
+        smoke_wheel._assert_snapshot(wheel_snapshot)
+        smoke_wheel._assert_snapshot(sdist_snapshot)
+        assert wheel_snapshot.path.read_bytes() == b"trusted wheel"
+        assert sdist_snapshot.path.read_bytes() == b"trusted sdist"
+        assert wheel_snapshot.path.resolve() != wheel.resolve()
+
+
+def test_artifact_snapshot_mutation_fails_before_execution(tmp_path: Path) -> None:
+    wheel = tmp_path / smoke_wheel.EXPECTED_WHEEL
+    sdist = tmp_path / smoke_wheel.EXPECTED_SDIST
+    wheel.write_bytes(b"trusted wheel")
+    sdist.write_bytes(b"trusted sdist")
+
+    with smoke_wheel._artifact_snapshots(wheel, sdist) as snapshots:
+        wheel_snapshot, _ = snapshots
+        wheel_snapshot.path.chmod(stat.S_IREAD | stat.S_IWRITE)
+        wheel_snapshot.path.write_bytes(b"hostile wheel")
+
+        with pytest.raises(RuntimeError, match="snapshot"):
+            smoke_wheel._assert_snapshot(wheel_snapshot)
 
 
 def test_stage_subprocess_timeout_is_reported(
