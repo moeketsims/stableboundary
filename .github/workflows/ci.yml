@@ -113,3 +113,22 @@ jobs:
           uv run --frozen python -m build --no-isolation
           uv run --frozen twine check dist/*
           uv run --frozen check-wheel-contents dist/*.whl
+      - name: Ordinary pip sdist install compatibility (locked Linux)
+        shell: bash
+        run: |
+          sdist="$(find dist -maxdepth 1 -type f -name 'stableboundary-*.tar.gz' -print -quit)"
+          test -n "$sdist"
+          sdist="$(realpath "$sdist")"
+          install_root="$(mktemp -d)"
+          outside_checkout="$(mktemp -d)"
+          trap 'rm -rf "$install_root" "$outside_checkout"' EXIT
+          python -m venv "$install_root/venv"
+          "$install_root/venv/bin/python" -m pip install --upgrade pip
+          "$install_root/venv/bin/python" -m pip install "$sdist"
+          "$install_root/venv/bin/python" -m pip check
+          (
+            cd "$outside_checkout"
+            STABLEBOUNDARY_CHECKOUT="$GITHUB_WORKSPACE" \
+              "$install_root/venv/bin/python" -c \
+              "import os; from pathlib import Path; import stableboundary; package_file = Path(stableboundary.__file__).resolve(); assert Path(os.environ['STABLEBOUNDARY_CHECKOUT']).resolve() not in package_file.parents, package_file; print(package_file)"
+          )

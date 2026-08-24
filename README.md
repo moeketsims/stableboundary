@@ -34,6 +34,15 @@ python -m pip install .
 Released artifacts can instead be installed by passing the wheel or source
 archive path to `python -m pip install`.
 
+CI tests source archives in two deliberately distinct ways. The locked Linux
+compatibility check creates a clean virtual environment, lets ordinary pip
+resolve runtime dependencies and use its normal isolated PEP 517 build, runs
+`pip check`, and imports `stableboundary` from outside the checkout. Separately,
+the authenticated artifact smoke validates archive identity and integrity
+before accepting its sdist-to-wheel execution path. The compatibility check is
+evidence for the ordinary user install command; it is not a substitute for the
+authenticated artifact proof.
+
 ## Audited known-nuisance fit
 
 The executable artifact example separates inferential evidence from simulator
