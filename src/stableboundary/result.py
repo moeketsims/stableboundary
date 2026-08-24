@@ -17,7 +17,6 @@ from ._exceptions import (
     NumericalProbabilityError,
     ValidationError,
 )
-from .backends import ScipyS0Backend
 from .cells import CellCounts
 from .design import KnownNuisance, LocalDesign, LocalPrior
 from .posterior import PosteriorGrid
@@ -410,7 +409,7 @@ class KnownNuisanceFit:
         return {
             "status": self.status,
             "method": self.method,
-            "parameterization": "S0",
+            "parameterization": self.posterior.backend_parameterization,
             "r": self.r,
             "counts": {
                 "n_minus": self.counts.n_minus,
@@ -432,7 +431,7 @@ class KnownNuisanceFit:
             "package_version": _package_version(),
             "status": self.status,
             "method": self.method,
-            "parameterization": "S0",
+            "parameterization": self.posterior.backend_parameterization,
             "known_nuisance": {
                 "loc": self.nuisance.loc,
                 "scale": self.nuisance.scale,
@@ -492,7 +491,12 @@ class KnownNuisanceFit:
             "backend": {
                 "method": self.posterior.backend_method,
                 "tolerance": self.posterior.backend_tolerance,
-                "parameterization": "S0",
+                "parameterization": self.posterior.backend_parameterization,
+                "library": self.posterior.backend_metadata.library,
+                "library_version": self.posterior.backend_metadata.library_version,
+                "effective_settings": dict(
+                    self.posterior.backend_metadata.effective_settings
+                ),
             },
             "rng": None,
             "identification": self.identification.to_dict(),
@@ -503,7 +507,7 @@ class KnownNuisanceFit:
         raw_threshold = _threshold(threshold)
         alpha = self.posterior.values("alpha")
         beta = self.posterior.values("beta")
-        backend = ScipyS0Backend()
+        backend = self.posterior.prediction_backend()
         log_negative = np.asarray(
             backend.logcdf(
                 -raw_threshold,
@@ -578,7 +582,7 @@ class KnownNuisanceFit:
         alpha = self.posterior.values("alpha").ravel()
         beta = self.posterior.values("beta").ravel()
         values = np.empty(draws, dtype=np.float64)
-        backend = ScipyS0Backend()
+        backend = self.posterior.prediction_backend()
         for index in np.unique(indices):
             positions = np.flatnonzero(indices == index)
             values[positions] = backend.rvs(

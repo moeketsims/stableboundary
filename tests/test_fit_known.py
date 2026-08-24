@@ -64,6 +64,14 @@ class _AnalyticBackend(ScipyS0Backend):
         return self._tail(alpha, beta, positive=True)
 
 
+class _S1AnalyticBackend(_AnalyticBackend):
+    _test_metadata = BackendMetadata(
+        method="analytic-test-s1",
+        tolerance=1e-14,
+        parameterization="S1",
+    )
+
+
 def _counts(design: LocalDesign) -> CellCounts:
     observations = np.zeros(design.n)
     observations[:2] = design.threshold + 1.0
@@ -109,6 +117,17 @@ def test_exact_fixed_node_grid_cannot_claim_refinement() -> None:
             design,
             LocalPrior.default(design),
             QuadratureConfig(base_nodes=8, refined_nodes=8),
+        )
+
+
+def test_exact_posterior_rejects_structurally_valid_s1_backend() -> None:
+    design = LocalDesign.from_sample_size(32)
+    with pytest.raises(Exception, match="parameterization.*S0"):
+        compute_exact_posterior(
+            _counts(design),
+            design,
+            LocalPrior.default(design),
+            backend=_S1AnalyticBackend(),
         )
 
 
@@ -177,6 +196,9 @@ def test_guarded_scipy_default_posterior_integration() -> None:
     assert posterior.refinement.converged
     assert posterior.refinement.joint_total_variation <= 0.002
     assert posterior.backend_method == "scipy-piecewise-s0-direct-log-tails"
+    assert posterior.backend_parameterization == "S0"
+    assert posterior.backend_metadata.library == "scipy"
+    assert dict(posterior.backend_metadata.effective_settings)["quad_eps"] == 1.2e-14
 
 
 def test_fit_known_returns_finite_six_quantity_summary_and_json_audit(

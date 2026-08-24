@@ -362,6 +362,24 @@ class RecordingBackend:
         return np.zeros(size)
 
 
+def test_exact_cells_reject_structurally_valid_s1_backend(
+    local_design: LocalDesign,
+) -> None:
+    backend = RecordingBackend()
+    backend.metadata = BackendMetadata(
+        method="recording-s1",
+        tolerance=1e-14,
+        parameterization="S1",
+    )
+    with pytest.raises(ValidationError, match="parameterization.*S0"):
+        exact_cell_probabilities(
+            LocalCoordinates(r=local_design.r, h=1.0, p=0.5),
+            local_design,
+            backend,
+        )
+    assert backend.calls == []
+
+
 def test_exact_cells_use_direct_log_tails_and_standardized_s0(
     local_design: LocalDesign,
 ) -> None:

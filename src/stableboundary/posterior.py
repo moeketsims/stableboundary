@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import isfinite
 from numbers import Integral
 from typing import Final
@@ -18,7 +18,12 @@ from scipy.special import (  # type: ignore[import-untyped]
 )
 
 from ._exceptions import ConvergenceError, ValidationError
-from .backends import ScipyS0Backend, StableBackend
+from .backends import (
+    BackendMetadata,
+    ScipyS0Backend,
+    StableBackend,
+    validate_s0_backend,
+)
 from .cells import CellCounts
 from .design import LocalDesign, LocalPrior
 
@@ -135,8 +140,8 @@ class PosteriorGrid:
     refined_nodes: int
     r: float
     interval_mass: float
-    backend_method: str
-    backend_tolerance: float
+    backend_metadata: BackendMetadata
+    _backend: StableBackend = field(repr=False, compare=False)
     refinement: RefinementDiagnostics
 
     def __post_init__(self) -> None:
@@ -153,12 +158,34 @@ class PosteriorGrid:
             raise ConvergenceError("posterior mass must be nonnegative and normalize")
         if not isfinite(self.log_normalizer):
             raise ConvergenceError("posterior log normalizer must be finite")
+        _, live_metadata = validate_s0_backend(self._backend)
+        if live_metadata != self.backend_metadata:
+            raise ValidationError("retained backend metadata changed during inference")
         for name, value in zip(
             ("h_nodes", "p_nodes", "mass", "q_minus", "q_plus"),
             arrays,
             strict=True,
         ):
             object.__setattr__(self, name, value)
+
+    @property
+    def backend_method(self) -> str:
+        return self.backend_metadata.method
+
+    @property
+    def backend_tolerance(self) -> float:
+        return self.backend_metadata.tolerance
+
+    @property
+    def backend_parameterization(self) -> str:
+        return self.backend_metadata.parameterization
+
+    def prediction_backend(self) -> StableBackend:
+        """Return the fitted backend only while its metadata remains unchanged."""
+        backend, live_metadata = validate_s0_backend(self._backend)
+        if live_metadata != self.backend_metadata:
+            raise ValidationError("fitted backend metadata changed after inference")
+        return backend
 
     def values(self, quantity: str) -> NDArray[np.float64]:
         """Return a read-only derived quantity on the retained grid."""
@@ -512,9 +539,8 @@ def compute_exact_posterior(
         raise ConvergenceError(
             "refined_nodes must exceed base_nodes to demonstrate convergence"
         )
-    evaluator = ScipyS0Backend() if backend is None else backend
-    if not isinstance(evaluator, StableBackend):
-        raise ValidationError("backend must satisfy StableBackend")
+    candidate: object = ScipyS0Backend() if backend is None else backend
+    evaluator, metadata = validate_s0_backend(candidate)
     base = _evaluate_grid(counts, design, prior, controls.base_nodes, evaluator)
     refined = _evaluate_grid(counts, design, prior, controls.refined_nodes, evaluator)
     diagnostics = _refinement_diagnostics(base, refined, design, prior, controls)
@@ -535,8 +561,8 @@ def compute_exact_posterior(
         refined_nodes=controls.refined_nodes,
         r=design.r,
         interval_mass=controls.interval_mass,
-        backend_method=evaluator.metadata.method,
-        backend_tolerance=evaluator.metadata.tolerance,
+        backend_metadata=metadata,
+        _backend=evaluator,
         refinement=diagnostics,
     )
 

@@ -8,7 +8,6 @@ from numpy.random import Generator
 from numpy.typing import ArrayLike, NDArray
 
 import stableboundary.posterior as posterior_module
-import stableboundary.result as result_module
 from stableboundary import InfiniteVarianceError, LocalDesign, fit_known_nuisance
 from stableboundary.backends import BackendMetadata, ScipyS0Backend
 
@@ -81,7 +80,6 @@ class _PredictiveBackend(ScipyS0Backend):
 @pytest.fixture
 def fit(monkeypatch: pytest.MonkeyPatch) -> object:
     monkeypatch.setattr(posterior_module, "ScipyS0Backend", _PredictiveBackend)
-    monkeypatch.setattr(result_module, "ScipyS0Backend", _PredictiveBackend)
     design = LocalDesign.from_sample_size(64)
     values = np.zeros(design.n)
     values[0] = design.threshold + 1.0
@@ -97,6 +95,7 @@ def test_expected_counts_are_future_size_times_signed_tail_probabilities(
     assert expected.negative == pytest.approx(250 * prediction.negative)
     assert expected.positive == pytest.approx(250 * prediction.positive)
     assert prediction.backend_method == "analytic-predictive-test"
+    assert fit.posterior.prediction_backend().__class__ is _PredictiveBackend
 
 
 def test_seeded_prediction_and_quantile_mc_metadata_are_reproducible(

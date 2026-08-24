@@ -10,7 +10,11 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from ._exceptions import NumericalProbabilityError, ValidationError
-from .backends import ScipyS0Backend, StableBackend
+from .backends import (
+    ScipyS0Backend,
+    StableBackend,
+    validate_s0_backend,
+)
 from .design import KnownNuisance, LocalDesign
 from .parameters import LocalCoordinates, StableParams
 
@@ -105,6 +109,10 @@ class CellProbabilities:
     log_q_plus: float
     method: str
     tolerance: float
+    parameterization: str = "S0"
+    backend_library: str | None = None
+    backend_library_version: str | None = None
+    backend_effective_settings: tuple[tuple[str, str | int | float | None], ...] = ()
 
     def __post_init__(self) -> None:
         probabilities = (self.q_minus, self.q_zero, self.q_plus)
@@ -144,6 +152,8 @@ class CellProbabilities:
             raise NumericalProbabilityError(
                 "probability tolerance must be finite and strictly positive"
             )
+        if self.parameterization != "S0":
+            raise NumericalProbabilityError("cell probabilities require Nolan S0")
 
 
 def _scalar_log_probability(operation: str, value: object) -> float:
@@ -177,9 +187,8 @@ def exact_cell_probabilities(
         raise ValidationError("design must be a LocalDesign object")
     if local.r != design.r:
         raise ValidationError("local coordinates must use the design's exact r")
-    evaluator = ScipyS0Backend() if backend is None else backend
-    if not isinstance(evaluator, StableBackend):
-        raise ValidationError("backend must satisfy StableBackend")
+    candidate: object = ScipyS0Backend() if backend is None else backend
+    evaluator, metadata = validate_s0_backend(candidate)
 
     params = StableParams(
         alpha=local.alpha,
@@ -238,8 +247,12 @@ def exact_cell_probabilities(
         q_plus=q_plus,
         log_q_minus=log_q_minus,
         log_q_plus=log_q_plus,
-        method=evaluator.metadata.method,
-        tolerance=evaluator.metadata.tolerance,
+        method=metadata.method,
+        tolerance=metadata.tolerance,
+        parameterization=metadata.parameterization,
+        backend_library=metadata.library,
+        backend_library_version=metadata.library_version,
+        backend_effective_settings=metadata.effective_settings,
     )
 
 
