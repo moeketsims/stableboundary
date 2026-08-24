@@ -106,6 +106,6 @@ jobs:
         run: uv run --frozen coverage report --fail-under=80
       - name: Locked build and metadata validation
         run: |
-          uv run --frozen python -m build
+          uv run --frozen python -m build --no-isolation
           uv run --frozen twine check dist/*
           uv run --frozen check-wheel-contents dist/*.whl

@@ -67,7 +67,7 @@ uv run --frozen ruff format --check .
 uv run --frozen mypy src
 uv run --frozen coverage run --branch -m pytest -q -m "not installed"
 uv run --frozen coverage report --fail-under=80
-uv run --frozen python -m build
+uv run --frozen python -m build --no-isolation
 uv run --frozen twine check dist/*
 uv run --frozen check-wheel-contents dist/*.whl
 uv run --frozen pytest -q tests/test_installed_package.py -m installed
