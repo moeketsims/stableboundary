@@ -758,6 +758,69 @@ def _common_grid_density(
     )
 
 
+def _axis_components(
+    axis: NDArray[np.float64],
+    density: NDArray[np.float64],
+) -> tuple[NDArray[np.float64], NDArray[np.float64], float]:
+    if (
+        axis.ndim != 1
+        or density.shape != axis.shape
+        or axis.size < 2
+        or not np.all(np.isfinite(axis))
+        or not np.all(np.isfinite(density))
+        or np.any(density < 0.0)
+        or np.any(np.diff(axis) <= 0.0)
+    ):
+        raise ConvergenceError("continuous marginal density is invalid")
+    widths = np.diff(axis)
+    segment_mass = 0.5 * (density[:-1] + density[1:]) * widths
+    cumulative = np.concatenate(([0.0], np.cumsum(segment_mass)))
+    total = float(cumulative[-1])
+    if (
+        not isfinite(total)
+        or total <= 0.0
+        or np.any(segment_mass < 0.0)
+        or np.any(np.diff(cumulative) < 0.0)
+    ):
+        raise ConvergenceError("continuous marginal CDF is invalid")
+    return widths, cumulative, total
+
+
+def _axis_tail_probability(
+    axis: NDArray[np.float64],
+    density: NDArray[np.float64],
+    value: float,
+    *,
+    upper_tail: bool,
+) -> float:
+    oriented_axis = -axis[::-1] if upper_tail else axis
+    oriented_density = density[::-1] if upper_tail else density
+    oriented_value = -value if upper_tail else value
+    widths, cumulative, total = _axis_components(oriented_axis, oriented_density)
+    if oriented_value <= oriented_axis[0]:
+        return 0.0
+    if oriented_value >= oriented_axis[-1]:
+        return 1.0
+    segment = min(
+        int(np.searchsorted(oriented_axis, oriented_value, side="right") - 1),
+        oriented_axis.size - 2,
+    )
+    local_offset = oriented_value - float(oriented_axis[segment])
+    local_width = float(widths[segment])
+    local_f0 = float(oriented_density[segment])
+    slope = (float(oriented_density[segment + 1]) - local_f0) / local_width
+    integral = (
+        float(cumulative[segment])
+        + local_f0 * local_offset
+        + 0.5 * slope * local_offset**2
+    )
+    result = integral / total
+    roundoff = 32.0 * np.finfo(np.float64).eps
+    if not isfinite(result) or result < -roundoff or result > 1.0 + roundoff:
+        raise ConvergenceError("continuous marginal CDF is invalid")
+    return min(1.0, max(0.0, result))
+
+
 def _axis_quantile(
     axis: NDArray[np.float64],
     density: NDArray[np.float64],
@@ -791,28 +854,8 @@ def _axis_quantile(
 
     oriented_axis = -axis[::-1] if reverse else axis
     oriented_density = density[::-1] if reverse else density
-    if (
-        oriented_axis.ndim != 1
-        or oriented_density.shape != oriented_axis.shape
-        or oriented_axis.size < 2
-        or not np.all(np.isfinite(oriented_axis))
-        or not np.all(np.isfinite(oriented_density))
-        or np.any(oriented_density < 0.0)
-        or np.any(np.diff(oriented_axis) <= 0.0)
-    ):
-        raise ConvergenceError("continuous marginal density is invalid")
-
-    widths = np.diff(oriented_axis)
-    segment_mass = 0.5 * (oriented_density[:-1] + oriented_density[1:]) * widths
-    cumulative = np.concatenate(([0.0], np.cumsum(segment_mass)))
-    total = float(cumulative[-1])
-    if (
-        not isfinite(total)
-        or total <= 0.0
-        or np.any(segment_mass < 0.0)
-        or np.any(np.diff(cumulative) < 0.0)
-    ):
-        raise ConvergenceError("continuous marginal CDF is invalid")
+    widths, cumulative, total = _axis_components(oriented_axis, oriented_density)
+    segment_mass = np.diff(cumulative)
     target_mass = target * total
     index = min(
         int(np.searchsorted(cumulative, target_mass, side="right") - 1),
@@ -839,28 +882,12 @@ def _axis_quantile(
     candidate = float(oriented_axis[index] + min(width, max(0.0, offset)))
 
     def tail_probability(value: float) -> float:
-        if value <= oriented_axis[0]:
-            return 0.0
-        if value >= oriented_axis[-1]:
-            return 1.0
-        segment = min(
-            int(np.searchsorted(oriented_axis, value, side="right") - 1),
-            oriented_axis.size - 2,
+        return _axis_tail_probability(
+            oriented_axis,
+            oriented_density,
+            value,
+            upper_tail=False,
         )
-        local_offset = value - float(oriented_axis[segment])
-        local_width = float(widths[segment])
-        local_f0 = float(oriented_density[segment])
-        slope = (float(oriented_density[segment + 1]) - local_f0) / local_width
-        integral = (
-            float(cumulative[segment])
-            + local_f0 * local_offset
-            + 0.5 * slope * local_offset**2
-        )
-        result = integral / total
-        roundoff = 32.0 * np.finfo(np.float64).eps
-        if not isfinite(result) or result < -roundoff or result > 1.0 + roundoff:
-            raise ConvergenceError("continuous marginal CDF is invalid")
-        return min(1.0, max(0.0, result))
 
     resolved = _validate_probability_inversion(
         "continuous marginal",
@@ -881,6 +908,7 @@ def _validate_probability_inversion(
     target: float,
     probability: Callable[[float], float],
     *,
+    allow_bracketed_rounding: bool = True,
     increasing: bool = True,
 ) -> float:
     """Require an interior float whose probability resolves the target tail."""
@@ -907,12 +935,61 @@ def _validate_probability_inversion(
         )
         for index in range(len(evaluated) - 1)
     )
-    if not isfinite(residual) or (residual > tolerance and not bracketed):
+    if not isfinite(residual) or (
+        residual > tolerance and (not allow_bracketed_rounding or not bracketed)
+    ):
         raise ConvergenceError(
             f"{name} quantile probability {target:.17g} is not numerically "
             f"resolvable (best probability residual {residual:.3g})"
         )
     return result
+
+
+def _affine_axis_quantile(
+    axis: NDArray[np.float64],
+    density: NDArray[np.float64],
+    probability: float,
+    *,
+    upper_tail: bool,
+    offset: float,
+    slope: float,
+    name: str,
+) -> float:
+    """Validate a marginal quantile after its reported affine transformation."""
+    source_upper_tail = upper_tail if slope > 0.0 else not upper_tail
+    source_candidate = _axis_quantile(
+        axis,
+        density,
+        probability,
+        upper_tail=source_upper_tail,
+    )
+    candidate = offset + slope * source_candidate
+    mapped_endpoints = (
+        offset + slope * float(axis[0]),
+        offset + slope * float(axis[-1]),
+    )
+    lower = min(mapped_endpoints)
+    upper = max(mapped_endpoints)
+
+    def mapped_tail_probability(value: float) -> float:
+        source_value = (value - offset) / slope
+        return _axis_tail_probability(
+            axis,
+            density,
+            source_value,
+            upper_tail=source_upper_tail,
+        )
+
+    return _validate_probability_inversion(
+        f"continuous {name}",
+        candidate,
+        lower,
+        upper,
+        probability,
+        mapped_tail_probability,
+        allow_bracketed_rounding=False,
+        increasing=not upper_tail,
+    )
 
 
 def _row_lower_integrals(
@@ -1191,22 +1268,24 @@ def _posterior_summaries(
                 upper_tail=upper_tail,
             )
         if quantity == "alpha":
-            return 2.0 - design.r * _axis_quantile(
+            return _affine_axis_quantile(
                 common.h_axis,
                 h_density,
                 probability,
-                upper_tail=not upper_tail,
+                upper_tail=upper_tail,
+                offset=2.0,
+                slope=-design.r,
+                name="alpha",
             )
         if quantity == "beta":
-            return (
-                2.0
-                * _axis_quantile(
-                    common.p_axis,
-                    p_density,
-                    probability,
-                    upper_tail=upper_tail,
-                )
-                - 1.0
+            return _affine_axis_quantile(
+                common.p_axis,
+                p_density,
+                probability,
+                upper_tail=upper_tail,
+                offset=-1.0,
+                slope=2.0,
+                name="beta",
             )
         if quantity == "tau_plus":
             return _tau_quantile(

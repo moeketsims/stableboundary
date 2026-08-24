@@ -18,6 +18,7 @@ from stableboundary.cells import CellCounts
 from stableboundary.design import KnownNuisance, LocalDesign, LocalPrior
 from stableboundary.posterior import (
     QuadratureConfig,
+    _affine_axis_quantile,
     _axis_quantile,
     _common_grid_density,
     _CommonGrid,
@@ -25,6 +26,7 @@ from stableboundary.posterior import (
     _joint_total_variation,
     _tau_cdf,
     _tau_quantile,
+    _trapezoid_weights,
     compute_exact_posterior,
 )
 
@@ -355,58 +357,174 @@ def test_exact_uniform_product_quantiles_use_continuous_pushforward() -> None:
 
 
 @pytest.mark.parametrize("interval_mass", [1.0 - 1e-12, 1.0 - 1e-14])
-def test_public_fit_resolves_extreme_tau_tail_probabilities(
-    monkeypatch: pytest.MonkeyPatch,
+def test_extreme_source_and_tau_quantiles_resolve_tail_probability(
     interval_mass: float,
 ) -> None:
-    monkeypatch.setattr(posterior_module, "ScipyS0Backend", _AnalyticBackend)
     design = LocalDesign.from_sample_size(128)
     prior = LocalPrior(design=design, p_min=1e-12, p_max=0.95)
     controls = QuadratureConfig(interval_mass=interval_mass)
-    fit = fit_known_nuisance(
-        np.zeros(design.n),
+    nuisance = KnownNuisance.externally_known(
         loc=0.0,
         scale=1.0,
-        design=design,
-        prior=prior,
         provenance="independent calibration",
-        quadrature=controls,
     )
-
-    tail = 0.5 * (1.0 - interval_mass)
-    p_summary = fit.posterior.summary_record("p")
-    assert p_summary.interval_lower > prior.p_min
-    assert p_summary.interval_lower == pytest.approx(
-        prior.p_min + tail * (prior.p_max - prior.p_min),
-        abs=np.spacing(prior.p_min),
+    counts = CellCounts.from_observations(
+        np.zeros(design.n),
+        nuisance=nuisance,
+        design=design,
     )
-
-    tau_summary = fit.posterior.summary_record("tau_plus")
-    support_lower = design.r * prior.h_min * prior.p_min
-    assert tau_summary.interval_lower > support_lower
     evaluation = _evaluate_grid(
-        fit.counts,
+        counts,
         design,
         prior,
         controls.refined_nodes,
         _AnalyticBackend(),
     )
     common = _common_grid_density(evaluation, prior, controls.common_grid_points)
+
+    tail = 0.5 * (1.0 - interval_mass)
+    p_density = _trapezoid_weights(common.h_axis) @ common.density
+    p_lower = _axis_quantile(common.p_axis, p_density, tail)
+    assert p_lower > prior.p_min
+    expected_p_lower = prior.p_min + tail * (prior.p_max - prior.p_min)
+    coordinate_ulp = max(
+        abs(np.spacing(expected_p_lower)),
+        abs(np.spacing(p_lower)),
+    )
+    assert abs(p_lower - expected_p_lower) <= 4.0 * coordinate_ulp
+
     p_widths = np.diff(common.p_axis)
     prefix = np.zeros_like(common.density)
     prefix[:, 1:] = np.cumsum(
         0.5 * (common.density[:, :-1] + common.density[:, 1:]) * p_widths,
         axis=1,
     )
+    tau_lower = _tau_quantile(
+        common,
+        design,
+        prefix,
+        prefix[:, -1],
+        tail,
+        positive=True,
+    )
+    support_lower = design.r * prior.h_min * prior.p_min
+    assert tau_lower > support_lower
     resolved_probability = _tau_cdf(
         common,
         design,
         prefix,
         prefix[:, -1],
-        tau_summary.interval_lower,
+        tau_lower,
         positive=True,
     )
     assert abs(resolved_probability - tail) <= 1e-9 * tail
+
+
+def test_affine_quantiles_preserve_lower_and_upper_tail_direction() -> None:
+    design = LocalDesign.from_sample_size(128)
+    prior = LocalPrior(design=design, p_min=0.10, p_max=0.70)
+    h_axis = np.linspace(prior.h_min, prior.h_max, 65)
+    p_axis = np.linspace(prior.p_min, prior.p_max, 65)
+    density = np.ones(65)
+    tail = 0.05
+
+    alpha = tuple(
+        _affine_axis_quantile(
+            h_axis,
+            density,
+            tail,
+            upper_tail=upper_tail,
+            offset=2.0,
+            slope=-design.r,
+            name="alpha",
+        )
+        for upper_tail in (False, True)
+    )
+    beta = tuple(
+        _affine_axis_quantile(
+            p_axis,
+            density,
+            tail,
+            upper_tail=upper_tail,
+            offset=-1.0,
+            slope=2.0,
+            name="beta",
+        )
+        for upper_tail in (False, True)
+    )
+    expected_alpha = (
+        2.0 - design.r * (prior.h_max - tail * (prior.h_max - prior.h_min)),
+        2.0 - design.r * (prior.h_min + tail * (prior.h_max - prior.h_min)),
+    )
+    expected_beta = (
+        2.0 * (prior.p_min + tail * (prior.p_max - prior.p_min)) - 1.0,
+        2.0 * (prior.p_max - tail * (prior.p_max - prior.p_min)) - 1.0,
+    )
+    assert alpha == pytest.approx(expected_alpha, abs=2e-15)
+    assert beta == pytest.approx(expected_beta, abs=2e-15)
+    assert alpha[0] < alpha[1]
+    assert beta[0] < beta[1]
+
+
+def test_public_fit_refuses_unresolvable_affine_extreme_intervals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(posterior_module, "ScipyS0Backend", _AnalyticBackend)
+    design = LocalDesign.from_sample_size(128)
+    prior = LocalPrior(design=design, p_min=1e-12, p_max=0.95)
+    with pytest.raises(
+        ConvergenceError,
+        match=r"continuous alpha quantile .*not numerically resolvable",
+    ):
+        fit_known_nuisance(
+            np.zeros(design.n),
+            loc=0.0,
+            scale=1.0,
+            design=design,
+            prior=prior,
+            provenance="independent calibration",
+            quadrature=QuadratureConfig(interval_mass=1.0 - 1e-14),
+        )
+
+
+def test_extreme_affine_tail_quantiles_refuse_both_directions() -> None:
+    design = LocalDesign.from_sample_size(128)
+    prior = LocalPrior(design=design, p_min=1e-12, p_max=0.95)
+    counts = CellCounts.from_observations(
+        np.zeros(design.n),
+        nuisance=KnownNuisance.externally_known(
+            loc=0.0,
+            scale=1.0,
+            provenance="independent calibration",
+        ),
+        design=design,
+    )
+    common = _common_grid_density(
+        _evaluate_grid(counts, design, prior, 32, _AnalyticBackend()),
+        prior,
+        65,
+    )
+    h_density = common.density @ _trapezoid_weights(common.p_axis)
+    p_density = _trapezoid_weights(common.h_axis) @ common.density
+    tail = 0.5 * (1.0 - (1.0 - 1e-14))
+    for name, axis, density, offset, slope in (
+        ("alpha", common.h_axis, h_density, 2.0, -design.r),
+        ("beta", common.p_axis, p_density, -1.0, 2.0),
+    ):
+        for upper_tail in (False, True):
+            with pytest.raises(
+                ConvergenceError,
+                match=rf"continuous {name} quantile .*not numerically resolvable",
+            ):
+                _affine_axis_quantile(
+                    axis,
+                    density,
+                    tail,
+                    upper_tail=upper_tail,
+                    offset=offset,
+                    slope=slope,
+                    name=name,
+                )
 
 
 def test_public_fit_refuses_unrepresentable_extreme_interval(
