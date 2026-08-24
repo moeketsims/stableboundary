@@ -21,13 +21,13 @@ from .parameters import LocalCoordinates, StableParams
 
 @dataclass(frozen=True, slots=True, init=False)
 class CellCounts:
-    """Counts in the negative, central, and positive fixed-threshold cells."""
+    """Counts bound to their complete design and nuisance provenance."""
 
     n_minus: int
     n_zero: int
     n_plus: int
-    threshold: float
-    n: int
+    design: LocalDesign
+    nuisance: KnownNuisance
 
     def __init__(self) -> None:
         """Prevent construction without validated observations and provenance."""
@@ -91,9 +91,19 @@ class CellCounts:
         object.__setattr__(result, "n_minus", n_minus)
         object.__setattr__(result, "n_zero", n_zero)
         object.__setattr__(result, "n_plus", n_plus)
-        object.__setattr__(result, "threshold", design.threshold)
-        object.__setattr__(result, "n", n)
+        object.__setattr__(result, "design", design)
+        object.__setattr__(result, "nuisance", nuisance)
         return result
+
+    @property
+    def threshold(self) -> float:
+        """Return the threshold from the retained immutable design."""
+        return self.design.threshold
+
+    @property
+    def n(self) -> int:
+        """Return the sample size from the retained immutable design."""
+        return self.design.n
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,14 +8,17 @@ from numpy.typing import ArrayLike
 from scipy.optimize import brentq  # type: ignore[import-untyped]
 
 import stableboundary.posterior as posterior_module
-from stableboundary import fit_known_nuisance
-from stableboundary._exceptions import ConvergenceError
+from stableboundary import KnownNuisanceFit, fit_known_nuisance
+from stableboundary._exceptions import ConvergenceError, ValidationError
 from stableboundary.backends import BackendMetadata, ScipyS0Backend
 from stableboundary.cells import CellCounts
 from stableboundary.design import KnownNuisance, LocalDesign, LocalPrior
 from stableboundary.posterior import (
     QuadratureConfig,
+    _axis_quantile,
+    _CommonGrid,
     _joint_total_variation,
+    _tau_quantile,
     compute_exact_posterior,
 )
 
@@ -73,6 +76,16 @@ class _S1AnalyticBackend(_AnalyticBackend):
     )
 
 
+class _FailIfCalledBackend(_AnalyticBackend):
+    def logcdf(self, *args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise AssertionError("backend must not run for mismatched provenance")
+
+    def logsf(self, *args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise AssertionError("backend must not run for mismatched provenance")
+
+
 def _counts(design: LocalDesign) -> CellCounts:
     observations = np.zeros(design.n)
     observations[:2] = design.threshold + 1.0
@@ -82,16 +95,6 @@ def _counts(design: LocalDesign) -> CellCounts:
         nuisance=KnownNuisance.externally_known(loc=0.0, scale=1.0, provenance="test"),
         design=design,
     )
-
-
-def _no_data_counts(design: LocalDesign) -> CellCounts:
-    counts = object.__new__(CellCounts)
-    object.__setattr__(counts, "n_minus", 0)
-    object.__setattr__(counts, "n_zero", 0)
-    object.__setattr__(counts, "n_plus", 0)
-    object.__setattr__(counts, "threshold", design.threshold)
-    object.__setattr__(counts, "n", 0)
-    return counts
 
 
 def test_exact_grid_is_normalized_read_only_and_reproducible() -> None:
@@ -108,6 +111,23 @@ def test_exact_grid_is_normalized_read_only_and_reproducible() -> None:
     assert first.refinement.converged
     assert first.refinement.common_grid_points == 65
     assert len(first.refinement.summaries) == 6
+    assert first.design is design
+    assert first.prior is prior
+    assert first.counts.design is design
+    assert first.counts.nuisance.provenance == "test"
+
+
+def test_exact_posterior_rejects_cross_design_counts_before_backend_calls() -> None:
+    count_design = LocalDesign.from_sample_size(32, c=1.0)
+    requested_design = LocalDesign.from_sample_size(32, c=1.25)
+    assert count_design.threshold != requested_design.threshold
+    with pytest.raises(ValidationError, match="full design"):
+        compute_exact_posterior(
+            _counts(count_design),
+            requested_design,
+            LocalPrior.default(requested_design),
+            backend=_FailIfCalledBackend(),
+        )
 
 
 def test_exact_fixed_node_grid_cannot_claim_refinement() -> None:
@@ -123,7 +143,7 @@ def test_exact_fixed_node_grid_cannot_claim_refinement() -> None:
 
 def test_exact_posterior_rejects_structurally_valid_s1_backend() -> None:
     design = LocalDesign.from_sample_size(32)
-    with pytest.raises(Exception, match="parameterization.*S0"):
+    with pytest.raises(ValidationError, match="parameterization.*S0"):
         compute_exact_posterior(
             _counts(design),
             design,
@@ -132,23 +152,10 @@ def test_exact_posterior_rejects_structurally_valid_s1_backend() -> None:
         )
 
 
-def test_exact_uniform_no_data_posterior_has_analytic_normalization() -> None:
+def test_continuous_uniform_axis_quantiles_include_support_endpoints() -> None:
     design = LocalDesign.from_sample_size(128)
     prior = LocalPrior.default(design)
-    posterior = compute_exact_posterior(
-        _no_data_counts(design),
-        design,
-        prior,
-        backend=_AnalyticBackend(),
-    )
-    assert posterior.log_normalizer == pytest.approx(0.0, abs=2e-14)
-    assert np.sum(posterior.mass * posterior.h_nodes) == pytest.approx(
-        0.5 * (prior.h_min + prior.h_max), abs=2e-14
-    )
-    assert np.sum(posterior.mass * posterior.p_nodes) == pytest.approx(
-        0.5 * (prior.p_min + prior.p_max), abs=2e-14
-    )
-    tail = 0.5 * (1.0 - posterior.interval_mass)
+    tail = 0.05
     h_expected = (
         prior.h_min + tail * (prior.h_max - prior.h_min),
         0.5 * (prior.h_min + prior.h_max),
@@ -159,20 +166,16 @@ def test_exact_uniform_no_data_posterior_has_analytic_normalization() -> None:
         0.5 * (prior.p_min + prior.p_max),
         prior.p_max - tail * (prior.p_max - prior.p_min),
     )
-    expected = {
-        "h": h_expected,
-        "p": p_expected,
-        "alpha": tuple(2.0 - design.r * value for value in reversed(h_expected)),
-        "beta": tuple(2.0 * value - 1.0 for value in p_expected),
-    }
-    for quantity, analytic in expected.items():
-        summary = posterior.summary_record(quantity)
-        actual = (
-            summary.interval_lower,
-            summary.median,
-            summary.interval_upper,
-        )
-        assert actual == pytest.approx(analytic, abs=1e-11)
+    h_axis = np.linspace(prior.h_min, prior.h_max, 65)
+    p_axis = np.linspace(prior.p_min, prior.p_max, 65)
+    h_actual = tuple(
+        _axis_quantile(h_axis, np.ones(65), value) for value in (tail, 0.5, 1.0 - tail)
+    )
+    p_actual = tuple(
+        _axis_quantile(p_axis, np.ones(65), value) for value in (tail, 0.5, 1.0 - tail)
+    )
+    assert h_actual == pytest.approx(h_expected, abs=1e-12)
+    assert p_actual == pytest.approx(p_expected, abs=1e-12)
 
 
 def _uniform_product_cdf(
@@ -198,12 +201,25 @@ def _uniform_product_cdf(
 def test_exact_uniform_product_quantiles_use_continuous_pushforward() -> None:
     design = LocalDesign.from_sample_size(128)
     prior = LocalPrior(design=design, p_min=0.10, p_max=0.70)
-    posterior = compute_exact_posterior(
-        _no_data_counts(design),
-        design,
-        prior,
-        backend=_AnalyticBackend(),
+    h_axis = np.linspace(prior.h_min, prior.h_max, 65)
+    p_axis = np.linspace(prior.p_min, prior.p_max, 65)
+    density = np.full(
+        (h_axis.size, p_axis.size),
+        1.0 / prior.area,
     )
+    common = _CommonGrid(
+        h_axis=h_axis,
+        p_axis=p_axis,
+        density=density,
+        measure=np.ones_like(density),
+    )
+    p_widths = np.diff(p_axis)
+    prefix = np.zeros_like(density)
+    prefix[:, 1:] = np.cumsum(
+        0.5 * (density[:, :-1] + density[:, 1:]) * p_widths,
+        axis=1,
+    )
+    row_total = prefix[:, -1]
 
     def analytic_quantile(probability: float, p_lower: float, p_upper: float) -> float:
         product = brentq(
@@ -222,7 +238,7 @@ def test_exact_uniform_product_quantiles_use_continuous_pushforward() -> None:
         )
         return design.r * product
 
-    tail = 0.5 * (1.0 - posterior.interval_mass)
+    tail = 0.05
     probabilities = (tail, 0.5, 1.0 - tail)
     expected_positive = tuple(
         analytic_quantile(value, prior.p_min, prior.p_max) for value in probabilities
@@ -231,21 +247,35 @@ def test_exact_uniform_product_quantiles_use_continuous_pushforward() -> None:
         analytic_quantile(value, 1.0 - prior.p_max, 1.0 - prior.p_min)
         for value in probabilities
     )
-    positive = posterior.summary_record("tau_plus")
-    negative = posterior.summary_record("tau_minus")
-    for summary, expected, p_lower, p_upper in (
+    positive = tuple(
+        _tau_quantile(
+            common,
+            design,
+            prefix,
+            row_total,
+            value,
+            positive=True,
+        )
+        for value in probabilities
+    )
+    negative = tuple(
+        _tau_quantile(
+            common,
+            design,
+            prefix,
+            row_total,
+            value,
+            positive=False,
+        )
+        for value in probabilities
+    )
+    for actual, expected, p_lower, p_upper in (
         (positive, expected_positive, prior.p_min, prior.p_max),
         (negative, expected_negative, 1.0 - prior.p_max, 1.0 - prior.p_min),
     ):
-        actual = (
-            summary.interval_lower,
-            summary.median,
-            summary.interval_upper,
-        )
         scale = design.r * (prior.h_max * p_upper - prior.h_min * p_lower)
         assert np.max(np.abs(np.asarray(actual) - np.asarray(expected))) / scale <= 1e-9
-    assert positive.median != pytest.approx(negative.median)
-    assert all(item.median >= 0.0 for item in posterior.refinement.summaries)
+    assert positive[1] != pytest.approx(negative[1])
 
 
 def test_exact_too_tight_refinement_is_a_structured_failure() -> None:
@@ -283,6 +313,25 @@ def test_exact_quadrature_defaults_are_the_declared_accuracy_policy() -> None:
     assert config.refinement_tolerance == 0.002
     assert config.interval_mass == 0.90
     assert config.common_grid_points == 65
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("refinement_tolerance", True),
+        ("refinement_tolerance", "0.1"),
+        ("refinement_tolerance", 1 + 0j),
+        ("interval_mass", False),
+        ("interval_mass", "0.9"),
+        ("interval_mass", 0.9 + 0j),
+    ],
+)
+def test_quadrature_real_controls_reject_bool_and_non_real_values(
+    field: str,
+    value: object,
+) -> None:
+    with pytest.raises(ValidationError, match=field):
+        QuadratureConfig(**{field: value})  # type: ignore[arg-type]
 
 
 def test_guarded_scipy_default_posterior_integration() -> None:
@@ -334,6 +383,39 @@ def test_fit_known_returns_finite_six_quantity_summary_and_json_audit(
     encoded = json.dumps(fit.audit_record(), allow_nan=False)
     assert "research_uncertified" in encoded
     assert "independent calibration" in encoded
+    environment = fit.audit_record()["environment"]
+    assert isinstance(environment, dict)
+    assert set(environment) == {"python", "numpy", "scipy", "stableboundary"}
+    assert all(isinstance(value, str) and value for value in environment.values())
+    assert fit.audit_record()["backend"]["origin"] == "custom"  # type: ignore[index]
+
+
+def test_fit_construction_is_package_controlled_and_rejects_false_composition() -> None:
+    with pytest.raises(TypeError, match="fit_known_nuisance"):
+        KnownNuisanceFit()
+
+    design = LocalDesign.from_sample_size(32)
+    prior = LocalPrior.default(design)
+    counts = _counts(design)
+    posterior = compute_exact_posterior(
+        counts,
+        design,
+        prior,
+        backend=_AnalyticBackend(),
+    )
+    conflicting_nuisance = KnownNuisance.externally_known(
+        loc=0.0,
+        scale=1.0,
+        provenance="different calibration",
+    )
+    with pytest.raises(ValidationError, match="nuisance provenance"):
+        KnownNuisanceFit._from_components(
+            nuisance=conflicting_nuisance,
+            design=design,
+            prior=prior,
+            counts=counts,
+            posterior=posterior,
+        )
 
 
 def test_fit_known_rejects_observation_count_mismatch() -> None:
