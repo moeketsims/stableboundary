@@ -699,7 +699,7 @@ def test_artifact_install_separates_dependencies_and_uses_no_deps(
 
     assert len(calls) == 3
     assert "numpy>=2.2" in calls[0]
-    assert "scipy>=1.18" in calls[0]
+    assert "scipy>=1.18,<1.19" in calls[0]
     assert not any("stableboundary" in argument for argument in calls[0])
     assert "find_spec('stableboundary') is None" in calls[1][-1]
     assert "--no-deps" in calls[2]

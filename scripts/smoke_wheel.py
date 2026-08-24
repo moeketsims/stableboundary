@@ -400,7 +400,7 @@ def _install_archive(python: Path, artifact: Path, *, cwd: Path) -> None:
             "--disable-pip-version-check",
             "--only-binary=:all:",
             "numpy>=2.2",
-            "scipy>=1.18",
+            "scipy>=1.18,<1.19",
         ],
         cwd=cwd,
         stage=f"runtime dependency installation for {artifact.name}",
