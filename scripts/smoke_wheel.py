@@ -10,7 +10,6 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import venv
 import zipfile
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -20,6 +19,10 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 DIST = REPOSITORY / "dist"
 EXAMPLE = REPOSITORY / "examples" / "known_nuisance_fit.py"
 QUANTITIES = {"h", "p", "alpha", "beta", "tau_plus", "tau_minus"}
+VENV_TIMEOUT_SECONDS = 180.0
+INSTALL_TIMEOUT_SECONDS = 600.0
+IMPORT_TIMEOUT_SECONDS = 60.0
+EXAMPLE_TIMEOUT_SECONDS = 180.0
 FORBIDDEN_PARTS = {
     ".planning",
     ".mypy_cache",
@@ -139,19 +142,32 @@ def _venv_python(environment: Path) -> Path:
     return executable
 
 
-def _run(command: list[str], *, cwd: Path, capture: bool = False) -> str:
+def _run(
+    command: list[str],
+    *,
+    cwd: Path,
+    stage: str,
+    timeout_seconds: float,
+    capture: bool = False,
+) -> str:
     environment = os.environ.copy()
     environment.pop("PYTHONHOME", None)
     environment.pop("PYTHONPATH", None)
-    completed = subprocess.run(
-        command,
-        cwd=cwd,
-        env=environment,
-        check=True,
-        shell=False,
-        capture_output=capture,
-        text=capture,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=cwd,
+            env=environment,
+            check=True,
+            shell=False,
+            capture_output=capture,
+            text=capture,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            f"{stage} exceeded its {timeout_seconds:g}-second timeout"
+        ) from error
     return completed.stdout if capture else ""
 
 
@@ -164,44 +180,129 @@ def _finite_float(name: str, value: object) -> float:
     return result
 
 
+def _strict_nonnegative_int(name: str, value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeError(f"installed example returned noninteger {name}")
+    if value < 0:
+        raise RuntimeError(f"installed example returned negative {name}")
+    return value
+
+
+def _validate_parameter_value(quantity: str, label: str, value: float) -> None:
+    if quantity == "alpha" and not 0.0 < value <= 2.0:
+        raise RuntimeError(f"installed example returned out-of-domain alpha {label}")
+    if quantity == "beta" and not -1.0 <= value <= 1.0:
+        raise RuntimeError(f"installed example returned out-of-domain beta {label}")
+    if quantity == "p" and not 0.0 <= value <= 1.0:
+        raise RuntimeError(f"installed example returned out-of-domain p {label}")
+    if quantity in {"h", "tau_plus", "tau_minus"} and value < 0.0:
+        raise RuntimeError(
+            f"installed example returned out-of-domain {quantity} {label}"
+        )
+
+
+def _validate_parameter_summary(quantity: str, summary: object) -> None:
+    if not isinstance(summary, dict) or set(summary) != {
+        "mean",
+        "median",
+        "credible_interval",
+    }:
+        raise RuntimeError(f"installed example returned malformed {quantity} summary")
+    interval = summary["credible_interval"]
+    if not isinstance(interval, dict) or set(interval) != {"lower", "upper", "mass"}:
+        raise RuntimeError(f"installed example returned malformed {quantity} interval")
+
+    mean = _finite_float(f"{quantity} mean", summary["mean"])
+    median = _finite_float(f"{quantity} median", summary["median"])
+    lower = _finite_float(f"{quantity} lower", interval["lower"])
+    upper = _finite_float(f"{quantity} upper", interval["upper"])
+    mass = _finite_float(f"{quantity} interval mass", interval["mass"])
+    for label, value in (
+        ("mean", mean),
+        ("median", median),
+        ("lower", lower),
+        ("upper", upper),
+    ):
+        _validate_parameter_value(quantity, label, value)
+    if not lower <= median <= upper:
+        raise RuntimeError(
+            f"installed example returned unordered {quantity} interval/median"
+        )
+    if not 0.0 < mass < 1.0:
+        raise RuntimeError(
+            f"installed example returned invalid {quantity} credible mass"
+        )
+
+
 def _validate_example(payload: dict[str, Any]) -> None:
     if payload.get("status") != "research_uncertified":
         raise RuntimeError("installed example returned an unexpected status")
+    if payload.get("method") != "exact_finite_three_cell":
+        raise RuntimeError("installed example returned an unexpected method")
     if payload.get("parameterization") != "S0":
         raise RuntimeError("installed example did not report S0")
     nuisance = payload.get("known_nuisance")
-    if not isinstance(nuisance, dict) or nuisance.get("mode") != "externally_known":
+    if not isinstance(nuisance, dict) or set(nuisance) != {
+        "loc",
+        "scale",
+        "mode",
+        "provenance",
+    }:
+        raise RuntimeError("installed example returned malformed nuisance provenance")
+    if nuisance.get("mode") != "externally_known":
         raise RuntimeError("installed example did not retain fixed nuisance provenance")
+    _finite_float("known location", nuisance["loc"])
+    if _finite_float("known scale", nuisance["scale"]) <= 0.0:
+        raise RuntimeError("installed example returned a nonpositive known scale")
+    provenance = nuisance["provenance"]
+    if not isinstance(provenance, str) or not provenance.strip():
+        raise RuntimeError("installed example returned invalid nuisance provenance")
+
     counts = payload.get("counts")
-    if not isinstance(counts, dict) or sum(
-        int(counts[name]) for name in ("n_minus", "n_zero", "n_plus")
-    ) != int(counts["n"]):
+    count_names = {"n_minus", "n_zero", "n_plus", "n"}
+    if not isinstance(counts, dict) or set(counts) != count_names:
         raise RuntimeError("installed example returned invalid cell counts")
+    validated_counts = {
+        name: _strict_nonnegative_int(f"cell count {name}", counts[name])
+        for name in count_names
+    }
+    if (
+        validated_counts["n"] == 0
+        or sum(validated_counts[name] for name in ("n_minus", "n_zero", "n_plus"))
+        != validated_counts["n"]
+    ):
+        raise RuntimeError("installed example returned invalid cell counts")
+
     parameters = payload.get("parameters")
     if not isinstance(parameters, dict) or set(parameters) != QUANTITIES:
         raise RuntimeError("installed example did not return all six summaries")
     for quantity, summary in parameters.items():
-        interval = (
-            summary.get("credible_interval") if isinstance(summary, dict) else None
-        )
-        values = (
-            summary.get("mean") if isinstance(summary, dict) else None,
-            summary.get("median") if isinstance(summary, dict) else None,
-            interval.get("lower") if isinstance(interval, dict) else None,
-            interval.get("upper") if isinstance(interval, dict) else None,
-        )
-        for label, value in zip(
-            ("mean", "median", "lower", "upper"), values, strict=True
-        ):
-            _finite_float(f"{quantity} {label}", value)
+        _validate_parameter_summary(quantity, summary)
+
     mass = payload.get("posterior_mass")
     if abs(_finite_float("posterior mass", mass) - 1.0) > 1e-12:
         raise RuntimeError("installed example posterior mass is not normalized")
+
     refinement = payload.get("refinement")
     if not isinstance(refinement, dict) or refinement.get("converged") is not True:
         raise RuntimeError(
             "installed example did not retain passing refinement evidence"
         )
+    tolerance = _finite_float("refinement tolerance", refinement.get("tolerance"))
+    total_variation = _finite_float(
+        "refinement total variation", refinement.get("joint_total_variation")
+    )
+    normalizer_change = _finite_float(
+        "refinement log-normalizer change",
+        refinement.get("log_normalizer_change"),
+    )
+    common_grid_points = _strict_nonnegative_int(
+        "refinement common grid points", refinement.get("common_grid_points")
+    )
+    if tolerance <= 0.0 or not 0.0 <= total_variation <= tolerance:
+        raise RuntimeError("installed example returned invalid refinement accuracy")
+    if normalizer_change < 0.0 or common_grid_points < 3:
+        raise RuntimeError("installed example returned invalid refinement diagnostics")
 
 
 def _exercise_archive(artifact: Path) -> dict[str, Any]:
@@ -212,7 +313,12 @@ def _exercise_archive(artifact: Path) -> dict[str, Any]:
         environment = root / "venv"
         work = root / "work"
         work.mkdir()
-        venv.EnvBuilder(with_pip=True).create(environment)
+        _run(
+            [sys.executable, "-m", "venv", str(environment)],
+            cwd=work,
+            stage="virtual-environment creation",
+            timeout_seconds=VENV_TIMEOUT_SECONDS,
+        )
         python = _venv_python(environment)
         _run(
             [
@@ -224,6 +330,8 @@ def _exercise_archive(artifact: Path) -> dict[str, Any]:
                 str(artifact),
             ],
             cwd=work,
+            stage=f"installation of {artifact.name}",
+            timeout_seconds=INSTALL_TIMEOUT_SECONDS,
         )
         origin = Path(
             _run(
@@ -234,6 +342,8 @@ def _exercise_archive(artifact: Path) -> dict[str, Any]:
                     "import stableboundary as sb; print(sb.__file__)",
                 ],
                 cwd=work,
+                stage=f"import check for {artifact.name}",
+                timeout_seconds=IMPORT_TIMEOUT_SECONDS,
                 capture=True,
             ).strip()
         ).resolve()
@@ -247,6 +357,8 @@ def _exercise_archive(artifact: Path) -> dict[str, Any]:
             _run(
                 [str(python), "-I", str(copied_example)],
                 cwd=work,
+                stage=f"public example for {artifact.name}",
+                timeout_seconds=EXAMPLE_TIMEOUT_SECONDS,
                 capture=True,
             )
         )
