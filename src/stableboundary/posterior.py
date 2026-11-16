@@ -43,13 +43,16 @@ _QUANTITIES: Final = (
 )
 _PUSHFORWARD_NODES, _PUSHFORWARD_WEIGHTS = roots_legendre(8)
 _CANONICAL_SCIPY_S0_TYPE: Final = ScipyS0Backend
+_LogLikelihood = Callable[
+    [NDArray[np.float64], NDArray[np.float64]], NDArray[np.float64]
+]
 
 
 def _package_version() -> str:
     try:
         return version("stableboundary")
     except PackageNotFoundError:  # pragma: no cover - source-tree fallback
-        return "0.1.0"
+        return "0.1.0a1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -349,6 +352,9 @@ class PosteriorGrid:
     backend_origin: Literal["canonical_scipy_s0", "custom"]
     environment: _InferenceEnvironment
     refinement: RefinementDiagnostics
+    likelihood_method: Literal["exact_finite_three_cell", "full_stable_likelihood"]
+    data_sha256: str | None
+    log_density: NDArray[np.float64]
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         """Prevent public construction or ``dataclasses.replace`` forgery."""
@@ -356,6 +362,20 @@ class PosteriorGrid:
         raise TypeError("use compute_exact_posterior() to construct a posterior")
 
     def __post_init__(self) -> None:
+        if self.likelihood_method not in {
+            "exact_finite_three_cell",
+            "full_stable_likelihood",
+        }:
+            raise ValidationError("posterior likelihood method is invalid")
+        if self.likelihood_method == "full_stable_likelihood":
+            if (
+                not isinstance(self.data_sha256, str)
+                or len(self.data_sha256) != 64
+                or any(char not in "0123456789abcdef" for char in self.data_sha256)
+            ):
+                raise ValidationError("full posterior must retain a data SHA-256")
+        elif self.data_sha256 is not None:
+            raise ValidationError("cell posterior does not retain raw data identity")
         base_nodes = _bounded_integer(
             "base_nodes", self.base_nodes, minimum=2, maximum=256
         )
@@ -372,6 +392,15 @@ class PosteriorGrid:
             upper_inclusive=False,
         )
         shape = (refined_nodes, refined_nodes)
+        object.__setattr__(
+            self,
+            "log_density",
+            _immutable_float64_array(
+                "log_density",
+                self.log_density,
+                shape=(refined_nodes + 2, refined_nodes + 2),
+            ),
+        )
         arrays: list[NDArray[np.float64]] = []
         for name in ("h_nodes", "p_nodes", "mass", "q_minus", "q_plus"):
             arrays.append(
@@ -406,12 +435,23 @@ class PosteriorGrid:
                 "posterior summaries must cover each supported quantity once"
             )
         _validate_experiment_provenance(self.counts, self.design, self.prior)
-        expected_h_axis, _ = _legendre_axis(
+        expected_h_axis, h_measure = _legendre_axis(
             self.prior.h_min, self.prior.h_max, refined_nodes
         )
-        expected_p_axis, _ = _legendre_axis(
+        expected_p_axis, p_measure = _legendre_axis(
             self.prior.p_min, self.prior.p_max, refined_nodes
         )
+        log_weight = self.log_density[1:-1, 1:-1] + np.log(
+            np.multiply.outer(h_measure, p_measure)
+        )
+        expected_normalizer = float(logsumexp(log_weight))
+        if abs(expected_normalizer - log_normalizer) > 1e-12 or not np.allclose(
+            np.exp(log_weight - expected_normalizer),
+            arrays[2],
+            rtol=1e-12,
+            atol=1e-15,
+        ):
+            raise ConvergenceError("retained log density disagrees with posterior mass")
         expected_h, expected_p = np.meshgrid(
             expected_h_axis,
             expected_p_axis,
@@ -588,6 +628,8 @@ def _evaluate_grid(
     prior: LocalPrior,
     nodes: int,
     backend: StableBackend,
+    *,
+    log_likelihood: _LogLikelihood | None = None,
 ) -> _GridEvaluation:
     quadrature_h, h_weights = _legendre_axis(prior.h_min, prior.h_max, nodes)
     quadrature_p, p_weights = _legendre_axis(prior.p_min, prior.p_max, nodes)
@@ -654,21 +696,30 @@ def _evaluate_grid(
     if not np.all(np.isfinite(q_zero)) or np.any(q_zero <= 0.0):
         raise ConvergenceError("exact finite central-cell probabilities are invalid")
 
-    coefficient = float(
-        gammaln(counts.n + 1)
-        - gammaln(counts.n_minus + 1)
-        - gammaln(counts.n_zero + 1)
-        - gammaln(counts.n_plus + 1)
-    )
-    log_likelihood = coefficient + (
-        xlogy(counts.n_minus, q_minus)
-        + xlogy(counts.n_zero, q_zero)
-        + xlogy(counts.n_plus, q_plus)
-    )
+    if log_likelihood is None:
+        coefficient = float(
+            gammaln(counts.n + 1)
+            - gammaln(counts.n_minus + 1)
+            - gammaln(counts.n_zero + 1)
+            - gammaln(counts.n_plus + 1)
+        )
+        likelihood_values = coefficient + (
+            xlogy(counts.n_minus, q_minus)
+            + xlogy(counts.n_zero, q_zero)
+            + xlogy(counts.n_plus, q_plus)
+        )
+    else:
+        # Signed cells are predictive quantities for the full likelihood;
+        # they do not contribute a second likelihood factor.
+        likelihood_values = log_likelihood(alpha, beta)
+        if likelihood_values.shape != alpha.shape or not np.all(
+            np.isfinite(likelihood_values)
+        ):
+            raise ConvergenceError("full log likelihood must be a finite grid")
     log_prior = np.asarray(
         prior.log_density(interpolation_h, interpolation_p), dtype=np.float64
     )
-    log_density = log_likelihood + log_prior
+    log_density = likelihood_values + log_prior
     quadrature_log_density = log_density[1:-1, 1:-1]
     log_measure = np.log(np.multiply.outer(h_weights, p_weights))
     log_weight = quadrature_log_density + log_measure
@@ -1436,15 +1487,17 @@ def _refinement_diagnostics(
     return diagnostics, refined_summaries
 
 
-def compute_exact_posterior(
+def _compute_posterior(
     counts: CellCounts,
     design: LocalDesign,
     prior: LocalPrior,
     config: QuadratureConfig | None = None,
     *,
     backend: StableBackend | None = None,
+    log_likelihood: _LogLikelihood | None = None,
+    data_sha256: str | None = None,
 ) -> PosteriorGrid:
-    """Compute and retain only a demonstrably converged exact finite posterior."""
+    """Shared quadrature and refinement for explicitly selected likelihoods."""
     if not isinstance(counts, CellCounts):
         raise ValidationError("counts must be a CellCounts object")
     if not isinstance(design, LocalDesign):
@@ -1467,8 +1520,22 @@ def compute_exact_posterior(
         if type(evaluator) is _CANONICAL_SCIPY_S0_TYPE
         else "custom"
     )
-    base = _evaluate_grid(counts, design, prior, controls.base_nodes, evaluator)
-    refined = _evaluate_grid(counts, design, prior, controls.refined_nodes, evaluator)
+    base = _evaluate_grid(
+        counts,
+        design,
+        prior,
+        controls.base_nodes,
+        evaluator,
+        log_likelihood=log_likelihood,
+    )
+    refined = _evaluate_grid(
+        counts,
+        design,
+        prior,
+        controls.refined_nodes,
+        evaluator,
+        log_likelihood=log_likelihood,
+    )
     diagnostics, summaries = _refinement_diagnostics(
         base, refined, design, prior, controls
     )
@@ -1502,10 +1569,30 @@ def compute_exact_posterior(
         ("backend_origin", backend_origin),
         ("environment", environment),
         ("refinement", diagnostics),
+        (
+            "likelihood_method",
+            "exact_finite_three_cell"
+            if log_likelihood is None
+            else "full_stable_likelihood",
+        ),
+        ("data_sha256", data_sha256),
+        ("log_density", refined.log_density),
     ):
         object.__setattr__(posterior, name, value)
     posterior.__post_init__()
     return posterior
+
+
+def compute_exact_posterior(
+    counts: CellCounts,
+    design: LocalDesign,
+    prior: LocalPrior,
+    config: QuadratureConfig | None = None,
+    *,
+    backend: StableBackend | None = None,
+) -> PosteriorGrid:
+    """Compute and retain a refinement-checked exact finite-cell posterior."""
+    return _compute_posterior(counts, design, prior, config, backend=backend)
 
 
 __all__ = ["PosteriorGrid", "QuadratureConfig", "compute_exact_posterior"]

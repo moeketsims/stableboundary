@@ -308,6 +308,8 @@ class KnownNuisanceFit:
             raise ValidationError("fit counts must be a CellCounts object")
         if not isinstance(self.posterior, PosteriorGrid):
             raise ValidationError("fit posterior must be a PosteriorGrid object")
+        if self.posterior.likelihood_method != "exact_finite_three_cell":
+            raise ValidationError("reduced fit requires a finite-cell posterior")
         self.nuisance.require_externally_known()
         if self.prior.design != self.design:
             raise ValidationError("fit prior must use the retained design")

@@ -1,0 +1,1573 @@
+{
+  "scope": "illustrative experiments, not calibration or a performance guarantee",
+  "environment": {
+    "python": "3.14.7",
+    "numpy": "2.5.2",
+    "scipy": "1.18.1",
+    "stableboundary": "0.1.0a1",
+    "system": "Windows",
+    "machine": "AMD64"
+  },
+  "cases": [
+    {
+      "n": 32,
+      "seed": 20261116,
+      "truth": {
+        "alpha": 1.8196748190204435,
+        "beta": 0.2,
+        "loc": 0,
+        "scale": 1
+      },
+      "prior": {
+        "h_min": 0.25,
+        "h_max": 1,
+        "p_min": 0.25,
+        "p_max": 0.75
+      },
+      "observations": [
+        -1.6044780770292493,
+        -0.8707766740713281,
+        -0.5402028058899075,
+        -0.014787355009969416,
+        -0.6591963354121322,
+        -1.0346298786872328,
+        1.5736484899440721,
+        -1.448319067501535,
+        -0.9990990572547072,
+        -0.4406540252892464,
+        -0.6551884348004589,
+        -3.7103278827089423,
+        -0.576810173628449,
+        1.662410075870904,
+        1.7828273954916032,
+        0.8721857699423223,
+        1.058897659348382,
+        -0.05587316958732774,
+        -1.2561952939782197,
+        0.9069574460985732,
+        -0.3247454176266951,
+        -0.4998293650011069,
+        1.4825699892655853,
+        0.9582269314115275,
+        3.0255449449582335,
+        0.47643946603410603,
+        0.7485293474783219,
+        2.1447940292584806,
+        -1.337640621879774,
+        1.0834031369287702,
+        -5.275473819706357,
+        -2.1030814270152303
+      ],
+      "quadrature": {
+        "base_nodes": 20,
+        "refined_nodes": 32,
+        "tolerance": 0.002
+      },
+      "reduced": {
+        "seconds": 2.1064213000354357,
+        "summary": {
+          "status": "research_uncertified",
+          "method": "exact_finite_three_cell",
+          "parameterization": "S0",
+          "r": 0.3005419682992607,
+          "counts": {
+            "n_minus": 2,
+            "n_zero": 29,
+            "n_plus": 1,
+            "n": 32
+          },
+          "identification": {
+            "evidence_status": "two_sided_evidence",
+            "precision_status": "not_assessed",
+            "p_kl_divergence": 0.01145758293797052,
+            "p_interval_width_contraction": 0.01180982304117928
+          },
+          "parameters": {
+            "h": {
+              "mean": 0.6195561805183623,
+              "median": 0.6168652899831694,
+              "credible_interval": {
+                "lower": 0.28675140664762055,
+                "upper": 0.9600763363368048,
+                "mass": 0.9
+              }
+            },
+            "p": {
+              "mean": 0.47868595459124563,
+              "median": 0.4690327295346518,
+              "credible_interval": {
+                "lower": 0.27093508041525055,
+                "upper": 0.7156206600467199,
+                "mass": 0.9
+              }
+            },
+            "alpha": {
+              "mean": 1.8137973660350395,
+              "median": 1.814606091572964,
+              "credible_interval": {
+                "lower": 1.7114567681597936,
+                "upper": 1.9138191678335423,
+                "mass": 0.9
+              }
+            },
+            "beta": {
+              "mean": -0.04262809081750886,
+              "median": -0.0619345409306964,
+              "credible_interval": {
+                "lower": -0.4581298391694989,
+                "upper": 0.4312413200934397,
+                "mass": 0.9
+              }
+            },
+            "tau_plus": {
+              "mean": 0.08879489690499179,
+              "median": 0.08140182793635525,
+              "credible_interval": {
+                "lower": 0.03399614907479227,
+                "upper": 0.16781960232421897,
+                "mass": 0.9
+              }
+            },
+            "tau_minus": {
+              "mean": 0.09740773705996889,
+              "median": 0.09042630780177281,
+              "credible_interval": {
+                "lower": 0.036145357264822764,
+                "upper": 0.18036849567691693,
+                "mass": 0.9
+              }
+            }
+          },
+          "warnings": [
+            "research_uncertified: ordinary floating-point refinement is not a proof certificate.",
+            "Signed-tail evidence is two-sided; precision is not assessed before calibration."
+          ]
+        },
+        "audit": {
+          "schema_version": 1,
+          "package_version": "0.1.0a1",
+          "environment": {
+            "python": "3.14.7",
+            "numpy": "2.5.2",
+            "scipy": "1.18.1",
+            "stableboundary": "0.1.0a1"
+          },
+          "status": "research_uncertified",
+          "method": "exact_finite_three_cell",
+          "parameterization": "S0",
+          "known_nuisance": {
+            "loc": 0.0,
+            "scale": 1.0,
+            "mode": "externally_known",
+            "provenance": "simulation design"
+          },
+          "design": {
+            "n": 32,
+            "c": 1.0,
+            "r": 0.3005419682992607,
+            "threshold": 2.506328668824373,
+            "formula_id": "critical-rate-lambertw-loglog-threshold",
+            "formula_version": 1,
+            "critical_rate_relative_residual": 2.220446049250313e-16
+          },
+          "prior": {
+            "family": "compact_uniform_rectangle",
+            "h_min": 0.25,
+            "h_max": 1.0,
+            "p_min": 0.25,
+            "p_max": 0.75
+          },
+          "counts": {
+            "n_minus": 2,
+            "n_zero": 29,
+            "n_plus": 1,
+            "n": 32,
+            "threshold": 2.506328668824373
+          },
+          "quadrature": {
+            "base_nodes": 20,
+            "refined_nodes": 32,
+            "interval_mass": 0.9,
+            "log_normalizer": -2.468304935655513
+          },
+          "refinement": {
+            "tolerance": 0.002,
+            "common_grid_points": 65,
+            "joint_total_variation": 8.48982150164839e-05,
+            "log_normalizer_change": 0.0,
+            "summary_changes": {
+              "h": {
+                "mean": 2.9605947323337506e-16,
+                "median": 3.651211635776382e-05,
+                "interval_lower": 8.893833414328848e-06,
+                "interval_upper": 5.021119443486081e-06
+              },
+              "p": {
+                "mean": 4.440892098500626e-16,
+                "median": 1.016234271211669e-05,
+                "interval_lower": 4.782882162546187e-06,
+                "interval_upper": 1.0424503125605611e-05
+              },
+              "alpha": {
+                "mean": 2.9605947323337506e-16,
+                "median": 3.651211635791955e-05,
+                "interval_lower": 5.0211194439309904e-06,
+                "interval_upper": 8.89383341457567e-06
+              },
+              "beta": {
+                "mean": 4.440892098500626e-16,
+                "median": 1.016234271211669e-05,
+                "interval_lower": 4.782882162546187e-06,
+                "interval_upper": 1.0424503125605611e-05
+              },
+              "tau_plus": {
+                "mean": 1.343298128326825e-16,
+                "median": 1.7770302253263973e-05,
+                "interval_lower": 6.521715273210693e-06,
+                "interval_upper": 3.505794251124599e-06
+              },
+              "tau_minus": {
+                "mean": 2.68659625665365e-16,
+                "median": 2.177546376896321e-05,
+                "interval_lower": 8.303147035558435e-06,
+                "interval_upper": 7.850051007465012e-06
+              }
+            },
+            "predictive_tail": {
+              "negative": 5.508892134667066e-16,
+              "positive": 4.340310900126003e-16
+            },
+            "converged": true
+          },
+          "backend": {
+            "origin": "canonical_scipy_s0",
+            "method": "scipy-piecewise-s0-direct-log-tails",
+            "tolerance": 1.2e-14,
+            "parameterization": "S0",
+            "library": "scipy",
+            "library_version": "1.18.1",
+            "effective_settings": {
+              "parameterization": "S0",
+              "pdf_default_method": "piecewise",
+              "cdf_default_method": "piecewise",
+              "quad_eps": 1.2e-14,
+              "piecewise_x_tol_near_zeta": 0.005,
+              "piecewise_alpha_tol_near_one": 0.005,
+              "pdf_fft_grid_spacing": 0.001,
+              "pdf_fft_n_points_two_power": null,
+              "pdf_fft_interpolation_degree": 3,
+              "pdf_fft_interpolation_level": 3,
+              "pdf_fft_min_points_threshold": null
+            }
+          },
+          "rng": null,
+          "identification": {
+            "evidence_status": "two_sided_evidence",
+            "precision_status": "not_assessed",
+            "p_kl_divergence": 0.01145758293797052,
+            "p_interval_width_contraction": 0.01180982304117928
+          },
+          "warnings": [
+            "research_uncertified: ordinary floating-point refinement is not a proof certificate.",
+            "Signed-tail evidence is two-sided; precision is not assessed before calibration."
+          ]
+        }
+      },
+      "full": {
+        "seconds": 203.89940960000968,
+        "summary": {
+          "status": "research_uncertified",
+          "method": "full_stable_likelihood",
+          "parameterization": "S0",
+          "parameters": {
+            "h": {
+              "mean": 0.649771557700743,
+              "median": 0.6593617763959737,
+              "credible_interval": {
+                "lower": 0.30277734687306596,
+                "upper": 0.9654471271075419,
+                "mass": 0.9
+              }
+            },
+            "p": {
+              "mean": 0.45135614216452613,
+              "median": 0.4326231766267176,
+              "credible_interval": {
+                "lower": 0.26628702843629676,
+                "upper": 0.6970731300854025,
+                "mass": 0.9
+              }
+            },
+            "alpha": {
+              "mean": 1.8047163771037502,
+              "median": 1.8018341139006568,
+              "credible_interval": {
+                "lower": 1.7098426201302328,
+                "upper": 1.9090027002143408,
+                "mass": 0.9
+              }
+            },
+            "beta": {
+              "mean": -0.09728771567095174,
+              "median": -0.1347536467465648,
+              "credible_interval": {
+                "lower": -0.4674259431274065,
+                "upper": 0.39414626017080495,
+                "mass": 0.9
+              }
+            },
+            "tau_plus": {
+              "mean": 0.0881219676644919,
+              "median": 0.08119638951392333,
+              "credible_interval": {
+                "lower": 0.034393174019677,
+                "upper": 0.1648171895753788,
+                "mass": 0.9
+              }
+            },
+            "tau_minus": {
+              "mean": 0.10716165523176605,
+              "median": 0.10259049837450289,
+              "credible_interval": {
+                "lower": 0.042719735517041876,
+                "upper": 0.1864375213119731,
+                "mass": 0.9
+              }
+            }
+          },
+          "warnings": [
+            "research_uncertified: ordinary floating-point refinement is not a proof certificate.",
+            "Full-likelihood reference on the declared compact local prior; parameter precision has not been calibrated."
+          ]
+        },
+        "audit": {
+          "schema_version": 1,
+          "status": "research_uncertified",
+          "method": "full_stable_likelihood",
+          "parameterization": "S0",
+          "environment": {
+            "python": "3.14.7",
+            "numpy": "2.5.2",
+            "scipy": "1.18.1",
+            "stableboundary": "0.1.0a1"
+          },
+          "known_nuisance": {
+            "loc": 0.0,
+            "scale": 1.0,
+            "mode": "externally_known",
+            "provenance": "simulation design"
+          },
+          "design": {
+            "n": 32,
+            "c": 1.0,
+            "r": 0.3005419682992607,
+            "threshold": 2.506328668824373,
+            "formula_id": "critical-rate-lambertw-loglog-threshold",
+            "formula_version": 1,
+            "critical_rate_relative_residual": 2.220446049250313e-16
+          },
+          "prior": {
+            "family": "compact_uniform_rectangle",
+            "h_min": 0.25,
+            "h_max": 1.0,
+            "p_min": 0.25,
+            "p_max": 0.75
+          },
+          "data": {
+            "n": 32,
+            "sha256": "999e079b9f3991975fdb1b096db292e893b59516650f2095a0e51dc0f46c7612",
+            "encoding": "ordered-little-endian-float64",
+            "observation_chunk_size": 64,
+            "likelihood": "product_of_raw_observation_densities",
+            "duplicate_handling": "exact_values_with_multiplicity"
+          },
+          "counts": {
+            "n_minus": 2,
+            "n_zero": 29,
+            "n_plus": 1
+          },
+          "quadrature": {
+            "base_nodes": 20,
+            "refined_nodes": 32,
+            "interval_mass": 0.9,
+            "log_normalizer": -60.989126873415984
+          },
+          "refinement": {
+            "tolerance": 0.002,
+            "common_grid_points": 65,
+            "joint_total_variation": 0.00019739168195440315,
+            "log_normalizer_change": 1.153431639977498e-06,
+            "summaries": [
+              {
+                "quantity": "h",
+                "mean": 4.3897816729791356e-07,
+                "median": 2.926220360273864e-05,
+                "interval_lower": 1.8536927708071953e-05,
+                "interval_upper": 9.808971304684869e-06
+              },
+              {
+                "quantity": "p",
+                "mean": 4.035078782216317e-08,
+                "median": 4.058328508160791e-05,
+                "interval_lower": 7.811455397188638e-06,
+                "interval_upper": 1.8954509829915978e-05
+              },
+              {
+                "quantity": "alpha",
+                "mean": 4.3897816729791356e-07,
+                "median": 2.9262203601902077e-05,
+                "interval_lower": 9.808971304910824e-06,
+                "interval_upper": 1.8536927708081914e-05
+              },
+              {
+                "quantity": "beta",
+                "mean": 4.035078782216317e-08,
+                "median": 4.058328508160791e-05,
+                "interval_lower": 7.811455397188638e-06,
+                "interval_upper": 1.8954509829915978e-05
+              },
+              {
+                "quantity": "tau_plus",
+                "mean": 1.7639340639591238e-07,
+                "median": 7.284262390137729e-06,
+                "interval_lower": 8.838637313412031e-06,
+                "interval_upper": 9.020679960254534e-06
+              },
+              {
+                "quantity": "tau_minus",
+                "mean": 3.024918671082803e-07,
+                "median": 2.3359369325110585e-05,
+                "interval_lower": 7.307854756389643e-06,
+                "interval_upper": 4.1919595629300564e-05
+              }
+            ],
+            "predictive_tail": {
+              "positive": 5.748195324893234e-08,
+              "negative": 1.823385419822178e-07
+            },
+            "converged": true
+          },
+          "backend": {
+            "method": "scipy-piecewise-s0-direct-log-tails",
+            "tolerance": 1.2e-14,
+            "parameterization": "S0",
+            "library": "scipy",
+            "library_version": "1.18.1",
+            "effective_settings": [
+              [
+                "parameterization",
+                "S0"
+              ],
+              [
+                "pdf_default_method",
+                "piecewise"
+              ],
+              [
+                "cdf_default_method",
+                "piecewise"
+              ],
+              [
+                "quad_eps",
+                1.2e-14
+              ],
+              [
+                "piecewise_x_tol_near_zeta",
+                0.005
+              ],
+              [
+                "piecewise_alpha_tol_near_one",
+                0.005
+              ],
+              [
+                "pdf_fft_grid_spacing",
+                0.001
+              ],
+              [
+                "pdf_fft_n_points_two_power",
+                null
+              ],
+              [
+                "pdf_fft_interpolation_degree",
+                3
+              ],
+              [
+                "pdf_fft_interpolation_level",
+                3
+              ],
+              [
+                "pdf_fft_min_points_threshold",
+                null
+              ]
+            ],
+            "origin": "canonical_scipy_s0"
+          },
+          "rng": null,
+          "warnings": [
+            "research_uncertified: ordinary floating-point refinement is not a proof certificate.",
+            "Full-likelihood reference on the declared compact local prior; parameter precision has not been calibrated."
+          ]
+        }
+      },
+      "comparison": {
+        "status": "research_uncertified",
+        "scope": "observed_data_same_compact_prior",
+        "full_method": "full_stable_likelihood",
+        "reduced_method": "exact_finite_three_cell",
+        "data_sha256": "999e079b9f3991975fdb1b096db292e893b59516650f2095a0e51dc0f46c7612",
+        "total_variation": 0.1006555500942434,
+        "hellinger": 0.08840032385044051,
+        "coarse_total_variation": 0.10067486123645887,
+        "coarse_hellinger": 0.08842271794209615,
+        "grid_points": 65,
+        "refined_grid_points": 129,
+        "refinement_change": 2.239409165563644e-05,
+        "tolerance": 0.002,
+        "warnings": [
+          "Observed-data comparison only; no automatic safety or fallback decision.",
+          "Both fits share the SciPy S0 backend and quadrature machinery; agreement is not independent numerical validation.",
+          "Full-density and count-probability normalizers are not a Bayes factor."
+        ]
+      }
+    },
+    {
+      "n": 32,
+      "seed": 20261117,
+      "truth": {
+        "alpha": 1.8196748190204435,
+        "beta": 0.2,
+        "loc": 0,
+        "scale": 1
+      },
+      "prior": {
+        "h_min": 0.25,
+        "h_max": 1,
+        "p_min": 0.25,
+        "p_max": 0.75
+      },
+      "observations": [
+        -0.6001175595568675,
+        0.9502761435538507,
+        1.348473827792347,
+        0.8625329002703621,
+        1.4537791425142428,
+        -1.1236367284565771,
+        -3.184903962900618,
+        -0.16633576278338338,
+        0.6461278023404697,
+        0.37960538289262186,
+        -0.5119194903235353,
+        -0.45795521864890715,
+        0.7526635231486907,
+        0.36916310016500814,
+        0.11192629112344399,
+        -1.3977286393311712,
+        -0.453608404906027,
+        1.3540339398879453,
+        0.9476671977816471,
+        -1.3697748038382342,
+        -0.9917183724389647,
+        1.9989797864191705,
+        1.4595770716663141,
+        0.1455874875634837,
+        -1.643597234684694,
+        -0.43038457258486645,
+        0.511131299845049,
+        2.79738552394986,
+        0.04207957202356434,
+        -0.5064197142545954,
+        0.09401235398760277,
+        1.0480982269500063
+      ],
+      "quadrature": {
+        "base_nodes": 20,
+        "refined_nodes": 32,
+        "tolerance": 0.002
+      },
+      "reduced": {
+        "seconds": 5.329512300028,
+        "summary": {
+          "status": "research_uncertified",
+          "method": "exact_finite_three_cell",
+          "parameterization": "S0",
+          "r": 0.3005419682992607,
+          "counts": {
+            "n_minus": 1,
+            "n_zero": 30,
+            "n_plus": 1,
+            "n": 32
+          },
+          "identification": {
+            "evidence_status": "two_sided_evidence",
+            "precision_status": "not_assessed",
+            "p_kl_divergence": 0.00023983612484370433,
+            "p_interval_width_contraction": 0.0047956626763978605
+          },
+          "parameters": {
+            "h": {
+              "mean": 0.5997135837225043,
+              "median": 0.5874845906373443,
+              "credible_interval": {
+                "lower": 0.2816662569736882,
+                "upper": 0.9533967796316446,
+                "mass": 0.9
+              }
+            },
+            "p": {
+              "mean": 0.5,
+              "median": 0.5,
+              "credible_interval": {
+                "lower": 0.2760790241021895,
+                "upper": 0.7239209758978105,
+                "mass": 0.9
+              }
+            },
+            "alpha": {
+              "mean": 1.819760899132235,
+              "median": 1.8234362247843672,
+              "credible_interval": {
+                "lower": 1.713464255279329,
+                "upper": 1.9153474687256424,
+                "mass": 0.9
+              }
+            },
+            "beta": {
+              "mean": -2.444198272597009e-17,
+              "median": -5e-324,
+              "credible_interval": {
+                "lower": -0.44784195179562103,
+                "upper": 0.44784195179562086,
+                "mass": 0.9
+              }
+            },
+            "tau_plus": {
+              "mean": 0.09011955043388245,
+              "median": 0.08219451093403894,
+              "credible_interval": {
+                "lower": 0.03386646558805327,
+                "upper": 0.17181668275678602,
+                "mass": 0.9
+              }
+            },
+            "tau_minus": {
+              "mean": 0.09011955043388245,
+              "median": 0.08219451093403894,
+              "credible_interval": {
+                "lower": 0.03386646558805327,
+                "upper": 0.17181668275678602,
+                "mass": 0.9
+              }
+            }
+          },
+          "warnings": [
+            "research_uncertified: ordinary floating-point refinement is not a proof certificate.",
+            "Signed-tail evidence is two-sided; precision is not assessed before calibration."
+          ]
+        },
+        "audit": {
+          "schema_version": 1,
+          "package_version": "0.1.0a1",
+          "environment": {
+            "python": "3.14.7",
+            "numpy": "2.5.2",
+            "scipy": "1.18.1",
+            "stableboundary": "0.1.0a1"
+          },
+          "status": "research_uncertified",
+          "method": "exact_finite_three_cell",
+          "parameterization": "S0",
+          "known_nuisance": {
+            "loc": 0.0,
+            "scale": 1.0,
+            "mode": "externally_known",
+            "provenance": "simulation design"
+          },
+          "design": {
+            "n": 32,
+            "c": 1.0,
+            "r": 0.3005419682992607,
+            "threshold": 2.506328668824373,
+            "formula_id": "critical-rate-lambertw-loglog-threshold",
+            "formula_version": 1,
+            "critical_rate_relative_residual": 2.220446049250313e-16
+          },
+          "prior": {
+            "family": "compact_uniform_rectangle",
+            "h_min": 0.25,
+            "h_max": 1.0,
+            "p_min": 0.25,
+            "p_max": 0.75
+          },
+          "counts": {
+            "n_minus": 1,
+            "n_zero": 30,
+            "n_plus": 1,
+            "n": 32,
+            "threshold": 2.506328668824373
+          },
+          "quadrature": {
+            "base_nodes": 20,
+            "refined_nodes": 32,
+            "interval_mass": 0.9,
+            "log_normalizer": -2.2597710665691695
+          },
+          "refinement": {
+            "tolerance": 0.002,
+            "common_grid_points": 65,
+            "joint_total_variation": 5.7958152313894654e-05,
+            "log_normalizer_change": 0.0,
+            "summary_changes": {
+              "h": {
+                "mean": 1.4802973661668753e-16,
+                "median": 2.5580941303005034e-05,
+                "interval_lower": 5.487190066618315e-06,
+                "interval_upper": 3.921217646141173e-06
+              },
+              "p": {
+                "mean": 2.220446049250313e-16,
+                "median": 1.1102230246251565e-16,
+                "interval_lower": 4.704751525141937e-06,
+                "interval_upper": 4.704751525252959e-06
+              },
+              "alpha": {
+                "mean": 1.4802973661668753e-16,
+                "median": 2.5580941302946815e-05,
+                "interval_lower": 3.921217645669811e-06,
+                "interval_upper": 5.487190066265567e-06
+              },
+              "beta": {
+                "mean": 2.220446049250313e-16,
+                "median": 1.1102230246251568e-16,
+                "interval_lower": 4.704751525197448e-06,
+                "interval_upper": 4.704751525252959e-06
+              },
+              "tau_plus": {
+                "mean": 6.716490641634125e-17,
+                "median": 1.393283891781716e-05,
+                "interval_lower": 4.8994797755801204e-06,
+                "interval_upper": 3.446489680840784e-06
+              },
+              "tau_minus": {
+                "mean": 0.0,
+                "median": 1.393283891781716e-05,
+                "interval_lower": 4.899479775613704e-06,
+                "interval_upper": 3.446489680840784e-06
+              }
+            },
+            "predictive_tail": {
+              "negative": 2.844041777324012e-16,
+              "positive": 2.844041777324012e-16
+            },
+            "converged": true
+          },
+          "backend": {
+            "origin": "canonical_scipy_s0",
+            "method": "scipy-piecewise-s0-direct-log-tails",
+            "tolerance": 1.2e-14,
+            "parameterization": "S0",
+            "library": "scipy",
+            "library_version": "1.18.1",
+            "effective_settings": {
+              "parameterization": "S0",
+              "pdf_default_method": "piecewise",
+              "cdf_default_method": "piecewise",
+              "quad_eps": 1.2e-14,
+              "piecewise_x_tol_near_zeta": 0.005,
+              "piecewise_alpha_tol_near_one": 0.005,
+              "pdf_fft_grid_spacing": 0.001,
+              "pdf_fft_n_points_two_power": null,
+              "pdf_fft_interpolation_degree": 3,
+              "pdf_fft_interpolation_level": 3,
+              "pdf_fft_min_points_threshold": null
+            }
+          },
+          "rng": null,
+          "identification": {
+            "evidence_status": "two_sided_evidence",
+            "precision_status": "not_assessed",
+            "p_kl_divergence": 0.00023983612484370433,
+            "p_interval_width_contraction": 0.0047956626763978605
+          },
+          "warnings": [
+            "research_uncertified: ordinary floating-point refinement is not a proof certificate.",
+            "Signed-tail evidence is two-sided; precision is not assessed before calibration."
+          ]
+        }
+      },
+      "full": {
+        "seconds": 232.61536130000604,
+        "summary": {
+          "status": "research_uncertified",
+          "method": "full_stable_likelihood",
+          "parameterization": "S0",
+          "parameters": {
+            "h": {
+              "mean": 0.5805114119319486,
+              "median": 0.5594754894497108,
+              "credible_interval": {
+                "lower": 0.27746353236056803,
+                "upper": 0.9456583221518465,
+                "mass": 0.9
+              }
+            },
+            "p": {
+              "mean": 0.4964597468327647,
+              "median": 0.4947895238520178,
+              "credible_interval": {
+                "lower": 0.2746599715448355,
+                "upper": 0.7232011530354265,
+                "mass": 0.9
+              }
+            },
+            "alpha": {
+              "mean": 1.8255319576377826,
+              "median": 1.8318541351855917,
+              "credible_interval": {
+                "lower": 1.7157899865219077,
+                "upper": 1.9166105638530893,
+                "mass": 0.9
+              }
+            },
+            "beta": {
+              "mean": -0.007080506334467146,
+              "median": -0.010420952295964405,
+              "credible_interval": {
+                "lower": -0.450680056910329,
+                "upper": 0.446402306070853,
+                "mass": 0.9
+              }
+            },
+            "tau_plus": {
+              "mean": 0.08658159567506246,
+              "median": 0.07823738231759506,
+              "credible_interval": {
+                "lower": 0.03266630274869514,
+                "upper": 0.16777982105660344,
+                "mass": 0.9
+              }
+            },
+            "tau_minus": {
+              "mean": 0.08788644668714829,
+              "median": 0.07955326306002856,
+              "credible_interval": {
+                "lower": 0.03304546451231427,
+                "upper": 0.16967497197426964,
+                "mass": 0.9
+              }
+            }
+          },
+          "warnings": [
+            "research_uncertified: ordinary floating-point refinement is not a proof certificate.",
+            "Full-likelihood reference on the declared compact local prior; parameter precision has not been calibrated."
+          ]
+        },
+        "audit": {
+          "schema_version": 1,
+          "status": "research_uncertified",
+          "method": "full_stable_likelihood",
+          "parameterization": "S0",
+          "environment": {
+            "python": "3.14.7",
+            "numpy": "2.5.2",
+            "scipy": "1.18.1",
+            "stableboundary": "0.1.0a1"
+          },
+          "known_nuisance": {
+            "loc": 0.0,
+            "scale": 1.0,
+            "mode": "externally_known",
+            "provenance": "simulation design"
+          },
+          "design": {
+            "n": 32,
+            "c": 1.0,
+            "r": 0.3005419682992607,
+            "threshold": 2.506328668824373,
+            "formula_id": "critical-rate-lambertw-loglog-threshold",
+            "formula_version": 1,
+            "critical_rate_relative_residual": 2.220446049250313e-16
+          },
+          "prior": {
+            "family": "compact_uniform_rectangle",
+            "h_min": 0.25,
+            "h_max": 1.0,
+            "p_min": 0.25,
+            "p_max": 0.75
+          },
+          "data": {
+            "n": 32,
+            "sha256": "9861d360242940112a871718b19e82d7ed92b11231fe52e3ada3633771b55b08",
+            "encoding": "ordered-little-endian-float64",
+            "observation_chunk_size": 64,
+            "likelihood": "product_of_raw_observation_densities",
+            "duplicate_handling": "exact_values_with_multiplicity"
+          },
+          "counts": {
+            "n_minus": 1,
+            "n_zero": 30,
+            "n_plus": 1
+          },
+          "quadrature": {
+            "base_nodes": 20,
+            "refined_nodes": 32,
+            "interval_mass": 0.9,
+            "log_normalizer": -52.35588213181899
+          },
+          "refinement": {
+            "tolerance": 0.002,
+            "common_grid_points": 65,
+            "joint_total_variation": 4.8677792167047835e-05,
+            "log_normalizer_change": 1.1394217978022425e-06,
+            "summaries": [
+              {
+                "quantity": "h",
+                "mean": 7.18390373706986e-07,
+                "median": 2.1248346444420935e-05,
+                "interval_lower": 3.4531923977324888e-06,
+                "interval_upper": 3.788567760842909e-06
+              },
+              {
+                "quantity": "p",
+                "mean": 1.5559352652960712e-06,
+                "median": 1.177105766414499e-06,
+                "interval_lower": 1.2074798865224778e-06,
+                "interval_upper": 4.650700559993837e-06
+              },
+              {
+                "quantity": "alpha",
+                "mean": 7.18390373706986e-07,
+                "median": 2.1248346444158813e-05,
+                "interval_lower": 3.7885677602226693e-06,
+                "interval_upper": 3.4531923973929637e-06
+              },
+              {
+                "quantity": "beta",
+                "mean": 1.5559352652960712e-06,
+                "median": 1.177105766414499e-06,
+                "interval_lower": 1.2074798865224778e-06,
+                "interval_upper": 4.650700559993837e-06
+              },
+              {
+                "quantity": "tau_plus",
+                "mean": 2.7413728566813344e-07,
+                "median": 8.747634976854965e-06,
+                "interval_lower": 3.1422220773766363e-06,
+                "interval_upper": 5.623731881812664e-06
+              },
+              {
+                "quantity": "tau_minus",
+                "mean": 1.057835875150335e-06,
+                "median": 1.2664597521499597e-05,
+                "interval_lower": 3.6432645749576215e-06,
+                "interval_upper": 2.239352803104193e-06
+              }
+            ],
+            "predictive_tail": {
+              "positive": 5.990943372990536e-07,
+              "negative": 1.021190290522933e-06
+            },
+            "converged": true
+          },
+          "backend": {
+            "method": "scipy-piecewise-s0-direct-log-tails",
+            "tolerance": 1.2e-14,
+            "parameterization": "S0",
+            "library": "scipy",
+            "library_version": "1.18.1",
+            "effective_settings": [
+              [
+                "parameterization",
+                "S0"
+              ],
+              [
+                "pdf_default_method",
+                "piecewise"
+              ],
+              [
+                "cdf_default_method",
+                "piecewise"
+              ],
+              [
+                "quad_eps",
+                1.2e-14
+              ],
+              [
+                "piecewise_x_tol_near_zeta",
+                0.005
+              ],
+              [
+                "piecewise_alpha_tol_near_one",
+                0.005
+              ],
+              [
+                "pdf_fft_grid_spacing",
+                0.001
+              ],
+              [
+                "pdf_fft_n_points_two_power",
+                null
+              ],
+              [
+                "pdf_fft_interpolation_degree",
+                3
+              ],
+              [
+                "pdf_fft_interpolation_level",
+                3
+              ],
+              [
+                "pdf_fft_min_points_threshold",
+                null
+              ]
+            ],
+            "origin": "canonical_scipy_s0"
+          },
+          "rng": null,
+          "warnings": [
+            "research_uncertified: ordinary floating-point refinement is not a proof certificate.",
+            "Full-likelihood reference on the declared compact local prior; parameter precision has not been calibrated."
+          ]
+        }
+      },
+      "comparison": {
+        "status": "research_uncertified",
+        "scope": "observed_data_same_compact_prior",
+        "full_method": "full_stable_likelihood",
+        "reduced_method": "exact_finite_three_cell",
+        "data_sha256": "9861d360242940112a871718b19e82d7ed92b11231fe52e3ada3633771b55b08",
+        "total_variation": 0.040012736071125266,
+        "hellinger": 0.033070135743521474,
+        "coarse_total_variation": 0.04001808084330451,
+        "coarse_hellinger": 0.03307617430516403,
+        "grid_points": 65,
+        "refined_grid_points": 129,
+        "refinement_change": 6.038561642558726e-06,
+        "tolerance": 0.002,
+        "warnings": [
+          "Observed-data comparison only; no automatic safety or fallback decision.",
+          "Both fits share the SciPy S0 backend and quadrature machinery; agreement is not independent numerical validation.",
+          "Full-density and count-probability normalizers are not a Bayes factor."
+        ]
+      }
+    },
+    {
+      "n": 32,
+      "seed": 20261118,
+      "truth": {
+        "alpha": 1.8196748190204435,
+        "beta": 0.2,
+        "loc": 0,
+        "scale": 1
+      },
+      "prior": {
+        "h_min": 0.25,
+        "h_max": 1,
+        "p_min": 0.25,
+        "p_max": 0.75
+      },
+      "observations": [
+        -0.3692173398254342,
+        0.15250212877518138,
+        -0.601090839700041,
+        -0.3742585004253754,
+        -0.37864283307628005,
+        0.5559018716598252,
+        -1.6092841085987022,
+        -2.683195672293715,
+        1.0035512797079962,
+        4.203561098855951,
+        0.16834395174568442,
+        0.4423138961690975,
+        -0.3124047931410026,
+        0.6042564757245139,
+        0.44625443888960314,
+        1.0031289009397943,
+        -1.3592718503647292,
+        6.444981103331052,
+        -0.778464387622475,
+        -1.886974103678103,
+        0.3656320082082178,
+        3.341823856708576,
+        -0.9191002342885604,
+        0.7513982706649127,
+        -0.3383167493904495,
+        4.340518365451939,
+        -1.4403960342792221,
+        0.7475483169367774,
+        -0.2676755154475377,
+        1.5716887917184754,
+        -1.9236005896365647,
+        0.03132058154117236
+      ],
+      "quadrature": {
+        "base_nodes": 20,
+        "refined_nodes": 32,
+        "tolerance": 0.002
+      },
+      "reduced": {
+        "seconds": 2.504217400040943,
+        "summary": {
+          "status": "research_uncertified",
+          "method": "exact_finite_three_cell",
+          "parameterization": "S0",
+          "r": 0.3005419682992607,
+          "counts": {
+            "n_minus": 1,
+            "n_zero": 27,
+            "n_plus": 4,
+            "n": 32
+          },
+          "identification": {
+            "evidence_status": "two_sided_evidence",
+            "precision_status": "not_assessed",
+            "p_kl_divergence": 0.09876488209963169,
+            "p_interval_width_contraction": 0.05760337728523479
+          },
+          "parameters": {
+            "h": {
+              "mean": 0.6655490823314418,
+              "median": 0.6846193490588544,
+              "credible_interval": {
+                "lower": 0.3030874311602535,
+                "upper": 0.9714710056843171,
+                "mass": 0.9
+              }
+            },
+            "p": {
+              "mean": 0.5631189901269129,
+              "median": 0.5869864057938049,
+              "credible_interval": {
+                "lower": 0.312032710904469,
+                "upper": 0.7361111911261133,
+                "mass": 0.9
+              }
+            },
+            "alpha": {
+              "mean": 1.7999745687963413,
+              "median": 1.7942431532980934,
+              "credible_interval": {
+                "lower": 1.708032191805973,
+                "upper": 1.9089095068723307,
+                "mass": 0.9
+              }
+            },
+            "beta": {
+              "mean": 0.12623798025382604,
+              "median": 0.17397281158760977,
+              "credible_interval": {
+                "lower": -0.375934578191062,
+                "upper": 0.4722223822522266,
+                "mass": 0.9
+              }
+            },
+            "tau_plus": {
+              "mean": 0.11346403555240142,
+              "median": 0.11072949961777528,
+              "credible_interval": {
+                "lower": 0.04248240656958605,
+                "upper": 0.1936832287920122,
+                "mass": 0.9
+              }
+            },
+            "tau_minus": {
+              "mean": 0.0865613956512568,
+              "median": 0.0804339637456168,
+              "credible_interval": {
+                "lower": 0.035039050442409424,
+                "upper": 0.1586346615154255,
+                "mass": 0.9
+              }
+            }
+          },
+          "warnings": [
+            "research_uncertified: ordinary floating-point refinement is not a proof certificate.",
+            "Signed-tail evidence is two-sided; precision is not assessed before calibration."
+          ]
+        },
+        "audit": {
+          "schema_version": 1,
+          "package_version": "0.1.0a1",
+          "environment": {
+            "python": "3.14.7",
+            "numpy": "2.5.2",
+            "scipy": "1.18.1",
+            "stableboundary": "0.1.0a1"
+          },
+          "status": "research_uncertified",
+          "method": "exact_finite_three_cell",
+          "parameterization": "S0",
+          "known_nuisance": {
+            "loc": 0.0,
+            "scale": 1.0,
+            "mode": "externally_known",
+            "provenance": "simulation design"
+          },
+          "design": {
+            "n": 32,
+            "c": 1.0,
+            "r": 0.3005419682992607,
+            "threshold": 2.506328668824373,
+            "formula_id": "critical-rate-lambertw-loglog-threshold",
+            "formula_version": 1,
+            "critical_rate_relative_residual": 2.220446049250313e-16
+          },
+          "prior": {
+            "family": "compact_uniform_rectangle",
+            "h_min": 0.25,
+            "h_max": 1.0,
+            "p_min": 0.25,
+            "p_max": 0.75
+          },
+          "counts": {
+            "n_minus": 1,
+            "n_zero": 27,
+            "n_plus": 4,
+            "n": 32,
+            "threshold": 2.506328668824373
+          },
+          "quadrature": {
+            "base_nodes": 20,
+            "refined_nodes": 32,
+            "interval_mass": 0.9,
+            "log_normalizer": -3.9869959158061867
+          },
+          "refinement": {
+            "tolerance": 0.002,
+            "common_grid_points": 65,
+            "joint_total_variation": 0.0001382673235144952,
+            "log_normalizer_change": 8.881784197001252e-16,
+            "summary_changes": {
+              "h": {
+                "mean": 1.4802973661668753e-16,
+                "median": 4.191804235646283e-05,
+                "interval_lower": 1.9665256728510865e-05,
+                "interval_upper": 3.961980257353541e-06
+              },
+              "p": {
+                "mean": 0.0,
+                "median": 2.5995861388183883e-05,
+                "interval_lower": 2.8408246319444608e-05,
+                "interval_upper": 5.56424921249743e-06
+              },
+              "alpha": {
+                "mean": 1.4802973661668753e-16,
+                "median": 4.191804235661489e-05,
+                "interval_lower": 3.9619802574360816e-06,
+                "interval_upper": 1.966525672835343e-05
+              },
+              "beta": {
+                "mean": 0.0,
+                "median": 2.5995861388183883e-05,
+                "interval_lower": 2.840824631950012e-05,
+                "interval_upper": 5.56424921249743e-06
+              },
+              "tau_plus": {
+                "mean": 6.716490641634125e-17,
+                "median": 2.305728790133495e-05,
+                "interval_lower": 1.7539415874467678e-05,
+                "interval_upper": 1.57794609689598e-05
+              },
+              "tau_minus": {
+                "mean": 6.716490641634125e-17,
+                "median": 2.342662259260317e-05,
+                "interval_lower": 1.0230074226752984e-05,
+                "interval_upper": 2.9354972611459403e-05
+              }
+            },
+            "predictive_tail": {
+              "negative": 1.4994356426210836e-16,
+              "positive": 0.0
+            },
+            "converged": true
+          },
+          "backend": {
+            "origin": "canonical_scipy_s0",
+            "method": "scipy-piecewise-s0-direct-log-tails",
+            "tolerance": 1.2e-14,
+            "parameterization": "S0",
+            "library": "scipy",
+            "library_version": "1.18.1",
+            "effective_settings": {
+              "parameterization": "S0",
+              "pdf_default_method": "piecewise",
+              "cdf_default_method": "piecewise",
+              "quad_eps": 1.2e-14,
+              "piecewise_x_tol_near_zeta": 0.005,
+              "piecewise_alpha_tol_near_one": 0.005,
+              "pdf_fft_grid_spacing": 0.001,
+              "pdf_fft_n_points_two_power": null,
+              "pdf_fft_interpolation_degree": 3,
+              "pdf_fft_interpolation_level": 3,
+              "pdf_fft_min_points_threshold": null
+            }
+          },
+          "rng": null,
+          "identification": {
+            "evidence_status": "two_sided_evidence",
+            "precision_status": "not_assessed",
+            "p_kl_divergence": 0.09876488209963169,
+            "p_interval_width_contraction": 0.05760337728523479
+          },
+          "warnings": [
+            "research_uncertified: ordinary floating-point refinement is not a proof certificate.",
+            "Signed-tail evidence is two-sided; precision is not assessed before calibration."
+          ]
+        }
+      },
+      "full": {
+        "seconds": 103.47899600001983,
+        "summary": {
+          "status": "research_uncertified",
+          "method": "full_stable_likelihood",
+          "parameterization": "S0",
+          "parameters": {
+            "h": {
+              "mean": 0.7430370908616163,
+              "median": 0.7797377515643208,
+              "credible_interval": {
+                "lower": 0.3798046672253372,
+                "upper": 0.9813129148412653,
+                "mass": 0.9
+              }
+            },
+            "p": {
+              "mean": 0.603327596234504,
+              "median": 0.6304795073942479,
+              "credible_interval": {
+                "lower": 0.3721415508538859,
+                "upper": 0.7402802763925853,
+                "mass": 0.9
+              }
+            },
+            "alpha": {
+              "mean": 1.776686170193098,
+              "median": 1.765656081387619,
+              "credible_interval": {
+                "lower": 1.7050742850561214,
+                "upper": 1.8858527577428514,
+                "mass": 0.9
+              }
+            },
+            "beta": {
+              "mean": 0.20665519246900585,
+              "median": 0.26095901478849565,
+              "credible_interval": {
+                "lower": -0.25571689829222827,
+                "upper": 0.48056055278517057,
+                "mass": 0.9
+              }
+            },
+            "tau_plus": {
+              "mean": 0.13492671994219235,
+              "median": 0.13701794465347214,
+              "credible_interval": {
+                "lower": 0.060928242666978535,
+                "upper": 0.20238600997248302,
+                "mass": 0.9
+              }
+            },
+            "tau_minus": {
+              "mean": 0.0883871098647144,
+              "median": 0.08285696198332214,
+              "credible_interval": {
+                "lower": 0.040150271744759276,
+                "upper": 0.15383819588335249,
+                "mass": 0.9
+              }
+            }
+          },
+          "warnings": [
+            "research_uncertified: ordinary floating-point refinement is not a proof certificate.",
+            "Full-likelihood reference on the declared compact local prior; parameter precision has not been calibrated."
+          ]
+        },
+        "audit": {
+          "schema_version": 1,
+          "status": "research_uncertified",
+          "method": "full_stable_likelihood",
+          "parameterization": "S0",
+          "environment": {
+            "python": "3.14.7",
+            "numpy": "2.5.2",
+            "scipy": "1.18.1",
+            "stableboundary": "0.1.0a1"
+          },
+          "known_nuisance": {
+            "loc": 0.0,
+            "scale": 1.0,
+            "mode": "externally_known",
+            "provenance": "simulation design"
+          },
+          "design": {
+            "n": 32,
+            "c": 1.0,
+            "r": 0.3005419682992607,
+            "threshold": 2.506328668824373,
+            "formula_id": "critical-rate-lambertw-loglog-threshold",
+            "formula_version": 1,
+            "critical_rate_relative_residual": 2.220446049250313e-16
+          },
+          "prior": {
+            "family": "compact_uniform_rectangle",
+            "h_min": 0.25,
+            "h_max": 1.0,
+            "p_min": 0.25,
+            "p_max": 0.75
+          },
+          "data": {
+            "n": 32,
+            "sha256": "995d7f1eea7f564b79f1bc54def3331da04ad9fff48c89ad13055b459c5bf330",
+            "encoding": "ordered-little-endian-float64",
+            "observation_chunk_size": 64,
+            "likelihood": "product_of_raw_observation_densities",
+            "duplicate_handling": "exact_values_with_multiplicity"
+          },
+          "counts": {
+            "n_minus": 1,
+            "n_zero": 27,
+            "n_plus": 4
+          },
+          "quadrature": {
+            "base_nodes": 20,
+            "refined_nodes": 32,
+            "interval_mass": 0.9,
+            "log_normalizer": -64.06550706418919
+          },
+          "refinement": {
+            "tolerance": 0.002,
+            "common_grid_points": 65,
+            "joint_total_variation": 0.00033042521798577317,
+            "log_normalizer_change": 1.437057943576292e-05,
+            "summaries": [
+              {
+                "quantity": "h",
+                "mean": 4.545999055712476e-07,
+                "median": 7.610647845253855e-05,
+                "interval_lower": 3.559232570419605e-05,
+                "interval_upper": 1.0246304522324815e-05
+              },
+              {
+                "quantity": "p",
+                "mean": 3.043197250640617e-06,
+                "median": 6.950024634977403e-05,
+                "interval_lower": 8.241273534048688e-05,
+                "interval_upper": 7.423857512067755e-06
+              },
+              {
+                "quantity": "alpha",
+                "mean": 4.545999055712476e-07,
+                "median": 7.61064784524336e-05,
+                "interval_lower": 1.0246304522562741e-05,
+                "interval_upper": 3.559232570385751e-05
+              },
+              {
+                "quantity": "beta",
+                "mean": 3.043197250640617e-06,
+                "median": 6.950024634977403e-05,
+                "interval_lower": 8.241273534048688e-05,
+                "interval_upper": 7.423857512067755e-06
+              },
+              {
+                "quantity": "tau_plus",
+                "mean": 1.928030861728008e-06,
+                "median": 9.058981630376363e-05,
+                "interval_lower": 2.9149529803035873e-05,
+                "interval_upper": 4.9557285435861084e-05
+              },
+              {
+                "quantity": "tau_minus",
+                "mean": 1.432103692181413e-06,
+                "median": 8.05524172010269e-06,
+                "interval_lower": 1.0910061213224314e-05,
+                "interval_upper": 5.5547954945148946e-05
+              }
+            ],
+            "predictive_tail": {
+              "positive": 1.7849380958499409e-06,
+              "negative": 2.0293854760527725e-06
+            },
+            "converged": true
+          },
+          "backend": {
+            "method": "scipy-piecewise-s0-direct-log-tails",
+            "tolerance": 1.2e-14,
+            "parameterization": "S0",
+            "library": "scipy",
+            "library_version": "1.18.1",
+            "effective_settings": [
+              [
+                "parameterization",
+                "S0"
+              ],
+              [
+                "pdf_default_method",
+                "piecewise"
+              ],
+              [
+                "cdf_default_method",
+                "piecewise"
+              ],
+              [
+                "quad_eps",
+                1.2e-14
+              ],
+              [
+                "piecewise_x_tol_near_zeta",
+                0.005
+              ],
+              [
+                "piecewise_alpha_tol_near_one",
+                0.005
+              ],
+              [
+                "pdf_fft_grid_spacing",
+                0.001
+              ],
+              [
+                "pdf_fft_n_points_two_power",
+                null
+              ],
+              [
+                "pdf_fft_interpolation_degree",
+                3
+              ],
+              [
+                "pdf_fft_interpolation_level",
+                3
+              ],
+              [
+                "pdf_fft_min_points_threshold",
+                null
+              ]
+            ],
+            "origin": "canonical_scipy_s0"
+          },
+          "rng": null,
+          "warnings": [
+            "research_uncertified: ordinary floating-point refinement is not a proof certificate.",
+            "Full-likelihood reference on the declared compact local prior; parameter precision has not been calibrated."
+          ]
+        }
+      },
+      "comparison": {
+        "status": "research_uncertified",
+        "scope": "observed_data_same_compact_prior",
+        "full_method": "full_stable_likelihood",
+        "reduced_method": "exact_finite_three_cell",
+        "data_sha256": "995d7f1eea7f564b79f1bc54def3331da04ad9fff48c89ad13055b459c5bf330",
+        "total_variation": 0.1958481979084952,
+        "hellinger": 0.17536527176719263,
+        "coarse_total_variation": 0.19586717316160265,
+        "coarse_hellinger": 0.17539229022328487,
+        "grid_points": 65,
+        "refined_grid_points": 129,
+        "refinement_change": 2.7018456092237075e-05,
+        "tolerance": 0.002,
+        "warnings": [
+          "Observed-data comparison only; no automatic safety or fallback decision.",
+          "Both fits share the SciPy S0 backend and quadrature machinery; agreement is not independent numerical validation.",
+          "Full-density and count-probability normalizers are not a Bayes factor."
+        ]
+      }
+    }
+  ]
+}

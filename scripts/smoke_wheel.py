@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import base64
 import binascii
 import csv
@@ -36,6 +37,13 @@ DIST = REPOSITORY / "dist"
 EXAMPLE = REPOSITORY / "examples" / "known_nuisance_fit.py"
 ORACLE = REPOSITORY / "scripts" / "artifact_oracle.json"
 PROJECT_NAME = "stableboundary"
+DEFAULT_RUNTIME_REQUIREMENTS = ("numpy==2.5.2", "scipy==1.18.1")
+PUBLIC_SDIST_FILES = (
+    "CHANGELOG.md",
+    "docs/validation.md",
+    "docs/comparison-results.json",
+    "examples/full_likelihood_comparison.py",
+)
 
 
 def _read_project_version(path: Path) -> str:
@@ -516,6 +524,16 @@ def _metadata_expectations() -> tuple[dict[str, list[str]], bytes, bytes]:
             "repository pyproject.toml optional dependencies are invalid"
         )
     requirements = [_canonical_requirement(item) for item in dependencies]
+    classifiers = project.get("classifiers", [])
+    urls = project.get("urls", {})
+    if not isinstance(classifiers, list) or not all(
+        isinstance(value, str) for value in classifiers
+    ):
+        raise RuntimeError("repository classifiers are invalid")
+    if not isinstance(urls, dict) or not all(
+        isinstance(name, str) and isinstance(value, str) for name, value in urls.items()
+    ):
+        raise RuntimeError("repository project URLs are invalid")
     for extra, items in optional.items():
         requirements.extend(_canonical_requirement(item, extra=extra) for item in items)
     license_bytes = _repository_file(REPOSITORY / "LICENSE")
@@ -526,11 +544,19 @@ def _metadata_expectations() -> tuple[dict[str, list[str]], bytes, bytes]:
         "Summary": [str(project["description"])],
         "Author": ["Moeketsi Mosia"],
         "License-File": ["LICENSE"],
-        "Requires-Python": [str(project["requires-python"])],
+        "Requires-Python": [
+            ",".join(
+                sorted(part.strip() for part in project["requires-python"].split(","))
+            )
+        ],
         "Requires-Dist": requirements,
         "Provides-Extra": list(optional),
         "Description-Content-Type": ["text/markdown"],
     }
+    if classifiers:
+        expected["Classifier"] = sorted(classifiers)
+    if urls:
+        expected["Project-URL"] = [f"{name}, {value}" for name, value in urls.items()]
     return expected, _repository_file(REPOSITORY / "README.md"), license_bytes
 
 
@@ -668,6 +694,7 @@ def _inspect_archives(wheel: Path, sdist: Path) -> ArchiveInspection:
     expected_metadata, readme_bytes, license_bytes = _metadata_expectations()
     del expected_metadata
     repository_sdist_payload = {
+        **{name: _repository_file(REPOSITORY / name) for name in PUBLIC_SDIST_FILES},
         ".gitignore": _repository_file(REPOSITORY / ".gitignore"),
         "LICENSE": license_bytes,
         "README.md": readme_bytes,
@@ -920,7 +947,43 @@ def _run(
     return completed.stdout if capture else ""
 
 
-def _prepare_environment(python: Path, *, cwd: Path) -> None:
+def _locked_runtime_requirements(path: Path) -> tuple[str, str]:
+    """Select unambiguous runtime pins without changing the approval oracle."""
+    try:
+        with path.open("rb") as stream:
+            document = tomllib.load(stream)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise RuntimeError(f"cannot read runtime lock from {path}") from error
+    packages = document.get("package")
+    if not isinstance(packages, list):
+        raise RuntimeError("runtime lock must contain a package list")
+    requirements = []
+    for name in ("numpy", "scipy"):
+        versions = {
+            item.get("version")
+            for item in packages
+            if isinstance(item, dict)
+            and item.get("name") == name
+            and isinstance(item.get("version"), str)
+        }
+        if len(versions) != 1:
+            raise RuntimeError(f"runtime lock must specify one {name} version")
+        version = versions.pop()
+        if (
+            not isinstance(version, str)
+            or re.fullmatch(r"[0-9]+(?:\.[0-9]+){2}", version) is None
+        ):
+            raise RuntimeError(f"runtime lock has an invalid {name} version")
+        requirements.append(f"{name}=={version}")
+    return requirements[0], requirements[1]
+
+
+def _prepare_environment(
+    python: Path,
+    *,
+    cwd: Path,
+    runtime_requirements: tuple[str, str] = DEFAULT_RUNTIME_REQUIREMENTS,
+) -> None:
     """Install dependencies and the pinned build backend before proof begins."""
     _run(
         [
@@ -935,8 +998,7 @@ def _prepare_environment(python: Path, *, cwd: Path) -> None:
             "--only-binary=:all:",
             "build>=1.5,<2",
             "hatchling==1.32.0",
-            "numpy>=2.2",
-            "scipy>=1.18,<1.19",
+            *runtime_requirements,
         ],
         cwd=cwd,
         stage="runtime and build dependency installation",
@@ -1645,6 +1707,52 @@ print(json.dumps({
     )
     if not isinstance(decoded, dict):
         raise RuntimeError("independent installed science probe returned invalid JSON")
+    return decoded
+
+
+def _installed_reference_probe(
+    python: Path, *, cwd: Path, import_roots: tuple[Path, ...]
+) -> dict[str, Any]:
+    """Exercise full-data inference and comparison through the installed API."""
+    source = r"""
+import json
+import sys
+sys.path[:0] = __IMPORT_ROOTS__
+import numpy as np
+import stableboundary as sb
+
+design = sb.LocalDesign.from_sample_size(256)
+prior = sb.LocalPrior(design, h_min=0.75, h_max=1.25, p_min=0.25, p_max=0.75)
+values = np.tile([-2.0, -0.5, 0.75, 2.5], 64)
+full = sb.fit_full_known_nuisance(values, 0, 1, design, prior)
+reduced = sb.fit_known_nuisance(values, 0, 1, design, prior)
+comparison = sb.compare_posteriors(full, reduced)
+assert full.method == 'full_stable_likelihood'
+assert full.status == 'research_uncertified'
+assert full.posterior.refinement.converged
+assert abs(float(full.posterior.mass.sum()) - 1.0) < 1e-12
+assert comparison.tolerance < comparison.total_variation <= 1.0
+assert 0.0 < comparison.hellinger <= 1.0
+assert comparison.refinement_change <= comparison.tolerance
+assert full.counts == reduced.counts
+assert not full.posterior.mass.flags.writeable
+assert full.audit_record()['data']['sha256'] == full.posterior.data_sha256
+print(json.dumps(comparison.summary(), sort_keys=True, allow_nan=False))
+"""
+    source = source.replace(
+        "__IMPORT_ROOTS__", json.dumps([str(root.resolve()) for root in import_roots])
+    )
+    decoded = json.loads(
+        _run(
+            [str(python), "-I", "-B", "-S", "-c", source],
+            cwd=cwd,
+            stage="installed full-likelihood reference",
+            timeout_seconds=EXAMPLE_TIMEOUT_SECONDS,
+            capture=True,
+        )
+    )
+    if not isinstance(decoded, dict):
+        raise RuntimeError("installed reference probe returned invalid JSON")
     return decoded
 
 
@@ -3343,6 +3451,7 @@ def _exercise_archive(
     source_artifact: Path,
     *,
     inspection: ArchiveInspection,
+    runtime_requirements: tuple[str, str] = DEFAULT_RUNTIME_REQUIREMENTS,
 ) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="stableboundary-smoke-") as temporary:
         root = Path(temporary).resolve()
@@ -3358,7 +3467,9 @@ def _exercise_archive(
             timeout_seconds=VENV_TIMEOUT_SECONDS,
         )
         python = _venv_python(environment)
-        _prepare_environment(python, cwd=work)
+        _prepare_environment(
+            python, cwd=work, runtime_requirements=runtime_requirements
+        )
 
         if source_artifact.name == EXPECTED_SDIST:
             with _artifact_snapshot(
@@ -3426,6 +3537,11 @@ def _exercise_archive(
                 science_values["reflection"],
                 runtime_versions=versions,
             )
+            reference = _installed_reference_probe(
+                python,
+                cwd=work,
+                import_roots=(installed.site_packages,),
+            )
             print(
                 json.dumps(
                     {
@@ -3438,6 +3554,7 @@ def _exercise_archive(
                         "joint_total_variation": payload["refinement"][
                             "joint_total_variation"
                         ],
+                        "full_vs_reduced_total_variation": reference["total_variation"],
                     },
                     sort_keys=True,
                 )
@@ -3445,12 +3562,28 @@ def _exercise_archive(
             return payload
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     """Inspect, install, and run the real example from both fresh archives."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--locked-runtime",
+        action="store_true",
+        help="use NumPy and SciPy versions from uv.lock; keep oracle approval checks",
+    )
+    arguments = parser.parse_args(argv)
+    requirements = (
+        _locked_runtime_requirements(REPOSITORY / "uv.lock")
+        if arguments.locked_runtime
+        else DEFAULT_RUNTIME_REQUIREMENTS
+    )
     wheel, sdist = _archives()
     inspection = _inspect_archives(wheel, sdist)
-    wheel_payload = _exercise_archive(wheel, inspection=inspection)
-    sdist_payload = _exercise_archive(sdist, inspection=inspection)
+    wheel_payload = _exercise_archive(
+        wheel, inspection=inspection, runtime_requirements=requirements
+    )
+    sdist_payload = _exercise_archive(
+        sdist, inspection=inspection, runtime_requirements=requirements
+    )
     if wheel_payload != sdist_payload:
         raise RuntimeError(
             "wheel and sdist executions produced different scientific evidence"
