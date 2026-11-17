@@ -1,0 +1,43 @@
+{
+  "full": {
+    "attempts": [
+      {
+        "nodes": [
+          20,
+          32
+        ],
+        "seconds": 285.95640209998237,
+        "refused": "ConvergenceError: posterior refinement failed: maximum component 0.00265761 exceeds tolerance 0.002"
+      },
+      {
+        "nodes": [
+          32,
+          48
+        ],
+        "seconds": 531.303791399987
+      }
+    ],
+    "summaries": {
+      "alpha": {
+        "mean": 1.6144473133775303,
+        "median": 1.6251682361092266,
+        "lower": 1.3571151662634764,
+        "upper": 1.8328328197437775,
+        "mass": 0.9
+      },
+      "beta": {
+        "mean": 0.509644262818846,
+        "median": 0.5613505877056861,
+        "lower": -0.029665531226432455,
+        "upper": 0.8677957819213334,
+        "mass": 0.9
+      }
+    },
+    "status": "research_uncertified",
+    "method": "full_stable_likelihood"
+  },
+  "comparison": {
+    "total_variation": 0.14861220407379122,
+    "hellinger": 0.15066994062937772
+  }
+}

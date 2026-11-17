@@ -9,6 +9,43 @@ near the Gaussian boundary. Its first workflow fits the exact finite three-cell
 posterior when location and scale are known independently of the observations.
 All public parameters use Nolan's continuous `S0` parameterization.
 
+## At a glance
+
+One simulated sample of 64 observations (seed `20261117`, true `alpha = 1.70`,
+`beta = 0.30`), fitted with this release. It is one illustrative example, not
+evidence about the method in general. The data and scripts are in
+[`figures/`](https://github.com/moeketsims/stableboundary/tree/main/figures).
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/moeketsims/stableboundary/main/figures/plot1_three_counts.png"
+       alt="Stable and Gaussian densities on a log scale. A threshold at plus and minus 3.2 splits 64 simulated observations into three cells holding 0, 60 and 4 observations."
+       width="640">
+</p>
+
+A threshold set by the sample size alone splits the observations into three
+cells. The reduced fit uses only the three counts.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/moeketsims/stableboundary/main/figures/plot2_posterior.png"
+       alt="Joint posterior over tail index and skewness from the counts 0, 60 and 4, with 50 and 90 percent regions. The simulated truth lies inside the 90 percent region."
+       width="640">
+</p>
+
+The posterior from those counts, computed in under two seconds: tail index mean
+1.62 (90% interval 1.33 to 1.88), skewness mean 0.56 (90% interval −0.01 to
+0.88).
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/moeketsims/stableboundary/main/figures/plot3_comparison.png"
+       alt="Marginal posteriors of tail index and skewness from the three-count fit and from the full-likelihood fit of the same sample. Total variation distance 0.15."
+       width="640">
+</p>
+
+The same sample fitted from every observation with `fit_full_known_nuisance()`,
+and the two posteriors compared with `compare_posteriors()`: total variation
+distance 0.15. Timings in the figure are from one Windows laptop and are not
+benchmarks.
+
 ## Scientific scope
 
 The current result status is always `research_uncertified`. The package does not
