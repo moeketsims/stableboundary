@@ -23,6 +23,12 @@ from .cells import CellCounts, CellProbabilities
 from .design import KnownNuisance, LocalDesign, LocalPrior, NuisanceMode
 from .parameters import LocalCoordinates, SignedTailGap, StableParams
 from .posterior import PosteriorGrid, QuadratureConfig
+from .reference import (
+    FullKnownNuisanceFit,
+    PosteriorComparison,
+    compare_posteriors,
+    fit_full_known_nuisance,
+)
 from .result import (
     CredibleInterval,
     ExpectedExceedanceCounts,
@@ -38,7 +44,7 @@ from .simulation import simulate
 try:
     __version__ = version("stableboundary")
 except PackageNotFoundError:  # pragma: no cover - supports an uninstalled source tree
-    __version__ = "0.1.0"
+    __version__ = "0.1.0a1"
 
 __all__ = [
     "CellCounts",
@@ -46,6 +52,7 @@ __all__ = [
     "ConvergenceError",
     "CredibleInterval",
     "ExpectedExceedanceCounts",
+    "FullKnownNuisanceFit",
     "IdentificationDiagnostics",
     "InfiniteMomentError",
     "InfiniteVarianceError",
@@ -58,6 +65,7 @@ __all__ = [
     "NuisanceMode",
     "ParameterSummary",
     "PosteriorGrid",
+    "PosteriorComparison",
     "PosteriorPredictiveSample",
     "PredictiveQuantileEstimate",
     "QuadratureConfig",
@@ -68,6 +76,8 @@ __all__ = [
     "UnidentifiedParameterError",
     "ValidationError",
     "__version__",
+    "compare_posteriors",
+    "fit_full_known_nuisance",
     "fit_known_nuisance",
     "fit_limiting_approximation",
     "simulate",

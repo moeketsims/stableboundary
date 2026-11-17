@@ -40,6 +40,8 @@ def _metadata_bytes() -> bytes:
     lines.extend(b"        " + line for line in license_lines[1:])
     for name in (
         "License-File",
+        "Classifier",
+        "Project-URL",
         "Requires-Python",
         "Requires-Dist",
         "Provides-Extra",
@@ -154,6 +156,10 @@ def _write_minimal_sdist(
     root = smoke_wheel.EXPECTED_SDIST_ROOT
     package = smoke_wheel._repository_package_payload()
     members = {
+        **{
+            f"{root}/{name}": (smoke_wheel.REPOSITORY / name).read_bytes()
+            for name in smoke_wheel.PUBLIC_SDIST_FILES
+        },
         f"{root}/uv.lock": (smoke_wheel.REPOSITORY / "uv.lock").read_bytes(),
         f"{root}/examples/{smoke_wheel.EXAMPLE.name}": (
             smoke_wheel.EXAMPLE.read_bytes() if example is None else example
@@ -645,8 +651,22 @@ def test_wheel_file_requires_exact_pure_python_build_contract(
         ),
         (b"Author: Moeketsi Mosia", b"Author: Substitute", "Author"),
         (b"License-File: LICENSE", b"License-File: SECRET", "License-File"),
-        (b"Requires-Python: >=3.12", b"Requires-Python: >=3.9", "Requires-Python"),
-        (b"Requires-Dist: numpy>=2.2", b"Requires-Dist: numpy", "Requires-Dist"),
+        (
+            b"Requires-Python: <3.15,>=3.12",
+            b"Requires-Python: >=3.9",
+            "Requires-Python",
+        ),
+        (
+            b"Development Status :: 3 - Alpha",
+            b"Development Status :: 5 - Production/Stable",
+            "Classifier",
+        ),
+        (
+            b"Repository, https://github.com/moeketsims/stableboundary",
+            b"Repository, https://example.com",
+            "Project-URL",
+        ),
+        (b"Requires-Dist: numpy==2.5.2", b"Requires-Dist: numpy", "Requires-Dist"),
         (b"Provides-Extra: dev", b"Provides-Extra: hostile", "Provides-Extra"),
         (
             b"Description-Content-Type: text/markdown",
@@ -1799,13 +1819,59 @@ def test_environment_preparation_finishes_before_artifact_consumption(
     assert len(calls) == 2
     assert "build>=1.5,<2" in calls[0]
     assert "hatchling==1.32.0" in calls[0]
-    assert "numpy>=2.2" in calls[0]
-    assert "scipy>=1.18,<1.19" in calls[0]
+    assert "numpy==2.5.2" in calls[0]
+    assert "scipy==1.18.1" in calls[0]
     assert not any("stableboundary" in argument for argument in calls[0])
     assert "--isolated" in calls[0]
     assert "--no-input" in calls[0]
     assert "--no-compile" in calls[0]
     assert "check" in calls[1]
+
+
+def test_locked_runtime_pins_reach_dependency_installation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock = tmp_path / "uv.lock"
+    lock.write_text(
+        '[[package]]\nname = "numpy"\nversion = "2.5.2"\n'
+        '[[package]]\nname = "scipy"\nversion = "1.18.1"\n',
+        encoding="utf-8",
+    )
+    calls: list[list[str]] = []
+
+    def record(command: list[str], **kwargs: object) -> str:
+        calls.append(command)
+        return ""
+
+    monkeypatch.setattr(smoke_wheel, "_run", record)
+    pins = smoke_wheel._locked_runtime_requirements(lock)
+    smoke_wheel._prepare_environment(
+        Path("python"), cwd=tmp_path, runtime_requirements=pins
+    )
+    assert pins == ("numpy==2.5.2", "scipy==1.18.1")
+    assert all(pin in calls[0] for pin in pins)
+    assert pins == smoke_wheel.DEFAULT_RUNTIME_REQUIREMENTS
+    assert "check" in calls[1]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "invalid TOML!",
+        'package = "invalid"',
+        '[[package]]\nname = "numpy"\nversion = "2.5.2"',
+        '[[package]]\nname = "numpy"\nversion = "2.5.2"\n'
+        '[[package]]\nname = "numpy"\nversion = "2.5.3"',
+        '[[package]]\nname = "numpy"\nversion = "2.5.2 --extra-index-url=bad"',
+    ],
+)
+def test_locked_runtime_rejects_missing_ambiguous_or_invalid_pins(
+    tmp_path: Path, content: str
+) -> None:
+    lock = tmp_path / "uv.lock"
+    lock.write_text(content, encoding="utf-8")
+    with pytest.raises(RuntimeError, match="runtime lock"):
+        smoke_wheel._locked_runtime_requirements(lock)
 
 
 def test_stage_subprocess_uses_allowlisted_environment(

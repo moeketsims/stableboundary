@@ -1,5 +1,9 @@
 # stableboundary
 
+**0.1.0a1: research alpha.** APIs may change before a stable release.
+See the [release notes](https://github.com/moeketsims/stableboundary/blob/main/CHANGELOG.md)
+and the [validation scope](https://github.com/moeketsims/stableboundary/blob/main/docs/validation.md).
+
 `stableboundary` provides Bayesian inference for univariate alpha-stable laws
 near the Gaussian boundary. Its first workflow fits the exact finite three-cell
 posterior when location and scale are known independently of the observations.
@@ -7,7 +11,7 @@ All public parameters use Nolan's continuous `S0` parameterization.
 
 ## Scientific scope
 
-The current result status is always `research_uncertified`. Phase 1 does not
+The current result status is always `research_uncertified`. The package does not
 establish a mathematical certificate, make an automatic safe/fallback decision,
 or estimate all four conventional stable parameters. It estimates the local
 shape coordinates while treating the supplied `loc` and `scale` as externally
@@ -24,7 +28,9 @@ interval in isolation.
 
 ## Installation
 
-The project requires Python 3.12 or newer. From a built source tree, install the
+This alpha supports Python 3.12 through 3.14 and pins NumPy 2.5.2 and
+SciPy 1.18.1. Use a separate virtual environment if another project needs
+different versions. These pins deliberately limit the initial support claim. From a built source tree, install the
 package with:
 
 ```console
@@ -118,6 +124,107 @@ without importing `stableboundary`. These checks make the artifact reproducible
 and sensitive to stale or hard-coded output, but they do not turn ordinary
 floating-point calculations into a proof certificate.
 
+## Full-likelihood reference and posterior comparison
+
+`fit_full_known_nuisance()` evaluates the product of the individual S0 stable
+densities under the same compact `(h, p)` prior as `fit_known_nuisance()`.
+It retains observation magnitudes, including those inside the central cell.
+It remains a local shape fit with independently known location and scale.
+
+This small simulated example uses a prespecified, narrower local prior to keep
+the reference calculation manageable:
+
+```python
+import json
+
+import stableboundary as sb
+
+design = sb.LocalDesign.from_sample_size(64)
+prior = sb.LocalPrior(
+    design,
+    h_min=0.25,
+    h_max=1.0,
+    p_min=0.25,
+    p_max=0.75,
+)
+truth = sb.StableParams(alpha=2.0 - design.r * 0.6, beta=0.2)
+observations = sb.simulate(truth, size=design.n, random_state=20261116)
+fit = sb.fit_known_nuisance(
+    observations,
+    loc=0.0,
+    scale=1.0,
+    design=design,
+    prior=prior,
+    provenance="simulation design",
+)
+full = sb.fit_full_known_nuisance(
+    observations,
+    loc=0.0,
+    scale=1.0,
+    design=design,
+    prior=fit.prior,
+    provenance=fit.nuisance.provenance,
+)
+comparison = sb.compare_posteriors(full, fit)
+print(json.dumps(full.summary(), indent=2))
+print(json.dumps(comparison.summary(), indent=2))
+```
+
+The full likelihood is a reference calculation and can be substantially slower
+than the grouped likelihood. Work grows with the number of distinct observations
+times the number of quadrature nodes. `observation_chunk_size` bounds the number
+of distinct observations evaluated in a block; a further internal cap limits
+temporary arrays. Exactly repeated values are evaluated once with their original
+multiplicities. The package does not round or bin observations. The SciPy
+backend does round: an observation within `0.005 * alpha**(1/alpha)` scale units
+of `zeta = -beta * tan(pi * alpha / 2)` is evaluated at `zeta` (the recorded
+`piecewise_x_tol_near_zeta` setting). `docs/validation.md` gives the measured
+size of this effect. Start with a small sample when exploring runtime.
+
+Both fitters check the base and refined quadrature grids, posterior summaries,
+and design-tail predictions. A failed check raises `ConvergenceError`; increase
+`base_nodes`, `refined_nodes`, and/or `common_grid_points` as indicated by the
+diagnostic, rather than treating a failed fit as a successful result.
+
+SciPy's stable routines are unreliable near `alpha = 1`. Both fitters therefore
+refuse, with `ValidationError` and before any likelihood evaluation, a prior
+whose support reaches `alpha < 1.10`, that is, one with
+`2 - design.r * prior.h_max < 1.10`. With `c = 1` the default prior needs
+`n >= 54`; otherwise pass a prior with the smaller `h_max` named in the error.
+The full fit also refuses a sample whose largest standardized observation
+exceeds `1e4` scale units, where the SciPy density loses accuracy. Both limits
+are empirical cutoffs, not accuracy guarantees.
+
+A `NumericalProbabilityError` means the calculation could not be completed
+reliably. Investigate the reported input and numerical cause; increasing
+quadrature nodes may change which points are evaluated, but does not establish
+that the underlying backend problem is fixed. See "Known backend limits" in
+`docs/validation.md`.
+
+`compare_posteriors()` requires matching designs, priors, nuisance provenance,
+and cell counts. Counts fully determine the reduced likelihood. It reports
+total variation and Hellinger distances between the two normalized posteriors,
+using shared interpolation grids of 65 and 129 points per axis by default.
+Both distances lie in `[0, 1]`; Hellinger distance uses the convention
+`sqrt(0.5 * integral((sqrt(p) - sqrt(q))**2))`. The comparison tolerance applies
+to the change in these estimates when refining the grid, not to the size of
+the disagreement between the posteriors. A large disagreement is a valid result.
+
+These are observed-data diagnostics. Both fits share the SciPy S0 backend and
+the deterministic posterior engine, so agreement is not independent numerical
+validation, a prospective error bound, or an automatic safety decision.
+The full fit's audit record includes the raw sample's canonical float64 SHA-256,
+runtime versions, prior, nuisance provenance, and numerical controls. Raw
+observations are not retained in the result. The raw-sample SHA-256 identifies
+the ordered sample; it does not anonymise the data, and low-entropy samples may
+be recoverable by guessing. Audit record layouts are method-specific and
+experimental in this alpha: the full-fit and reduced-fit records carry the same
+`schema_version` but are not one common shape. Its log normalizer includes the
+raw-density scale Jacobian and cannot be compared with the grouped count
+normalizer as a Bayes factor: the two likelihoods use different observation
+spaces. Full-fit results currently expose parameter summaries and audit records;
+the predictive convenience methods remain on the reduced-fit result.
+
 ## Maintainer checks
 
 Run the checks in this order from the repository root:
@@ -154,13 +261,23 @@ hash only after independent hosts agree and its counts, extrema, and summary
 diagnostics have been checked. Raw hashes remain audit observations. The smoke
 verifier intentionally rejects unmeasured combinations.
 
+To exercise both archives with NumPy and SciPy pinned to the committed
+`uv.lock`, run `uv run --frozen python -I -S scripts/smoke_wheel.py --locked-runtime`.
+This optional mode retains the same artifact authentication and numerical
+approval checks. The default smoke test resolves the same pinned runtime declared by the package.
+It continues to refuse unapproved platform/runtime combinations.
+Both modes also exercise the full-likelihood reference and posterior comparison
+from each installed archive.
+
 ## Current limitations
 
 - Input observations must be one-dimensional, finite, and independently drawn
   under the declared stable sampling model.
 - Location and scale must be independently known; same-sample plug-in
   standardization is unsupported.
-- The result is a reduced, exact finite-cell posterior only. Independent full
-  stable-likelihood comparison and automatic fallback arrive in later phases.
+- The default fit is a reduced, exact finite-cell posterior. A separately
+  requested full-likelihood reference and observed-data posterior comparison
+  are available. Independent production numerics and automatic fallback remain
+  future work.
 - `research_uncertified` is deliberately retained even when ordinary
   floating-point refinement passes.
