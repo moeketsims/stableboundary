@@ -20,6 +20,7 @@ from .backends import ScipyS0Backend, StableBackend
 from .cells import CellCounts
 from .design import KnownNuisance, LocalDesign, LocalPrior
 from .posterior import (
+    _CANONICAL_SCIPY_S0_TYPE,
     PosteriorGrid,
     QuadratureConfig,
     _bounded_integer,
@@ -229,6 +230,27 @@ class FullKnownNuisanceFit:
         }
 
 
+def _require_validated_canonical_magnitude(
+    observations: NDArray[np.float64], nuisance: KnownNuisance
+) -> None:
+    """Refuse observations too extreme for the canonical backend's density.
+
+    The refinement checks may fail to detect a density that is wrong at one
+    extreme observation, so this runs before any density evaluation. The limit
+    is an engineering cutoff from spot checks, not a proven accuracy bound.
+    """
+    limit = _CANONICAL_SCIPY_S0_TYPE.MAX_VALIDATED_ABS_Z
+    # CellCounts.from_observations has already refused nonfinite standardization.
+    standardized = (observations - nuisance.loc) / nuisance.scale
+    largest = float(np.max(np.abs(standardized)))
+    if not isfinite(largest) or largest > limit:
+        raise ValidationError(
+            f"largest standardized observation |z| = {largest:.6g} exceeds the "
+            f"{limit:g} limit of the canonical SciPy S0 density, which loses "
+            "accuracy for extreme arguments; check loc and scale"
+        )
+
+
 def fit_full_known_nuisance(
     x: ArrayLike,
     loc: float,
@@ -249,7 +271,10 @@ def fit_full_known_nuisance(
     than returning an unrefined posterior or switching to the grouped likelihood.
     A prior whose support reaches ``alpha < 1.10`` is refused with
     ``ValidationError`` before any density evaluation, because the SciPy backend
-    is unreliable near ``alpha = 1``.
+    is unreliable near ``alpha = 1``. So is a sample whose largest standardized
+    observation exceeds ``1e4`` scale units, where the SciPy density loses
+    accuracy. Both limits are empirical; see "Known backend limits" in
+    ``docs/validation.md``.
     """
     if not isinstance(design, LocalDesign):
         raise ValidationError("design must be a LocalDesign object")
@@ -271,6 +296,8 @@ def fit_full_known_nuisance(
     data_sha256 = hashlib.sha256(observations.tobytes(order="C")).hexdigest()
     unique, multiplicities = np.unique(observations, return_counts=True)
     backend = ScipyS0Backend()
+    if type(backend) is _CANONICAL_SCIPY_S0_TYPE:
+        _require_validated_canonical_magnitude(observations, nuisance)
 
     def likelihood(
         alpha: NDArray[np.float64], beta: NDArray[np.float64]
@@ -350,6 +377,9 @@ class PosteriorComparison:
     Hellinger distance uses ``sqrt(0.5 * integral((sqrt(p)-sqrt(q))**2))`` and
     lies in [0, 1]. Distances concern normalized posteriors on the same prior
     support. They are numerical estimates, not error bounds or safety decisions.
+    Comparison-grid refinement checks numerical integration of the two fixed
+    interpolated posterior surfaces; it does not independently measure their
+    interpolation error or backend error.
     """
 
     full: FullKnownNuisanceFit

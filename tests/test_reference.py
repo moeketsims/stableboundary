@@ -228,6 +228,66 @@ def test_full_refuses_prior_reaching_alpha_near_one_before_scipy(monkeypatch):
         sb.fit_full_known_nuisance(np.zeros(design.n), 0, 1, design)
 
 
+def _extreme_sample(design, loc, scale, value):
+    values = np.full(design.n, loc)
+    values[0] = value
+    return values
+
+
+@pytest.mark.parametrize("sign", [1.0, -1.0])
+def test_full_refuses_observation_beyond_validated_magnitude_before_scipy(
+    monkeypatch, sign
+):
+    def fail(*args, **kwargs):
+        raise AssertionError("the magnitude guard must run before SciPy")
+
+    monkeypatch.setattr(ScipyS0Backend, "_evaluate", fail)
+    design = sb.LocalDesign.from_sample_size(64)
+    prior = sb.LocalPrior(design, h_min=0.25, h_max=1.0, p_min=0.25, p_max=0.75)
+    nuisance = sb.KnownNuisance.externally_known(loc=3.0, scale=2.5, provenance="t")
+    limit = ScipyS0Backend.MAX_VALIDATED_ABS_Z
+    at_limit = nuisance.loc + sign * nuisance.scale * limit
+    inside = float(np.nextafter(at_limit, nuisance.loc))
+    outside = float(np.nextafter(at_limit, sign * np.inf))
+    assert abs((inside - nuisance.loc) / nuisance.scale) < limit
+    assert abs((at_limit - nuisance.loc) / nuisance.scale) == limit
+    assert abs((outside - nuisance.loc) / nuisance.scale) > limit
+
+    for accepted in (inside, at_limit):
+        reference._require_validated_canonical_magnitude(
+            _extreme_sample(design, nuisance.loc, nuisance.scale, accepted), nuisance
+        )
+    with pytest.raises(sb.ValidationError, match="check loc and scale"):
+        sb.fit_full_known_nuisance(
+            _extreme_sample(design, nuisance.loc, nuisance.scale, outside),
+            nuisance.loc,
+            nuisance.scale,
+            design,
+            prior,
+        )
+    # Standardization that overflows is refused as well, not passed through.
+    with pytest.raises(sb.ValidationError, match="nonfinite"):
+        sb.fit_full_known_nuisance(
+            _extreme_sample(design, -sign * 1e308, 1.0, sign * 1e308),
+            -sign * 1e308,
+            1.0,
+            design,
+            prior,
+        )
+
+
+def test_magnitude_guard_applies_only_to_the_canonical_backend(toy):
+    values, design, prior = toy
+    extreme = values.copy()
+    extreme[0] = 10.0 * ScipyS0Backend.MAX_VALIDATED_ABS_Z
+    # With the toy backend the fit may fail to converge, but it must not be
+    # refused for magnitude: that limit belongs to the SciPy density.
+    try:
+        sb.fit_full_known_nuisance(extreme, 0.0, 1.0, design, prior)
+    except sb.StableBoundaryError as error:
+        assert "standardized observation" not in str(error)
+
+
 @pytest.fixture(scope="module")
 def real_fits():
     design = sb.LocalDesign.from_sample_size(256)

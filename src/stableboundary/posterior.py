@@ -1496,15 +1496,24 @@ def _require_validated_canonical_alpha(design: LocalDesign, prior: LocalPrior) -
     """
     minimum = _CANONICAL_SCIPY_S0_TYPE.MIN_VALIDATED_ALPHA
     alpha_min = 2.0 - design.r * prior.h_max
-    if alpha_min < minimum:
-        # Rounded down so that following the advice always passes this check.
-        h_limit = floor(1000.0 * (2.0 - minimum) / design.r) / 1000.0
-        raise ValidationError(
-            f"prior support reaches alpha = {alpha_min:.6g}, below the "
-            f"{minimum:g} limit of the canonical SciPy S0 backend, which is "
-            "unreliable near alpha = 1; use a larger sample size or a prior "
-            f"with h_max <= {h_limit:g}"
-        )
+    if alpha_min >= minimum:
+        return
+    # Rounded down to three decimals, then stepped down if floating-point
+    # rounding still leaves it short, so following the advice always passes.
+    h_limit = floor(1000.0 * (2.0 - minimum) / design.r) / 1000.0
+    while 2.0 - design.r * h_limit < minimum:
+        h_limit -= 0.001
+    advice = "use a design with a smaller r (larger n or smaller c), or a prior "
+    if h_limit > prior.h_min:
+        advice += f"with h_max <= {h_limit:.3f}"
+    else:
+        # This prior's h_min is already at or above the largest usable h_max.
+        advice += f"with h_min < h_max <= {h_limit:.3f}"
+    raise ValidationError(
+        f"prior support reaches alpha = {alpha_min:.6g}, below the "
+        f"{minimum:g} limit of the canonical SciPy S0 backend, which is "
+        f"unreliable near alpha = 1; {advice}"
+    )
 
 
 def _compute_posterior(

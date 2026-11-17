@@ -1,7 +1,8 @@
 # stableboundary
 
 **0.1.0a1: research alpha.** APIs may change before a stable release.
-See [release notes](CHANGELOG.md) and the [validation scope](docs/validation.md).
+See the [release notes](https://github.com/moeketsims/stableboundary/blob/main/CHANGELOG.md)
+and the [validation scope](https://github.com/moeketsims/stableboundary/blob/main/docs/validation.md).
 
 `stableboundary` provides Bayesian inference for univariate alpha-stable laws
 near the Gaussian boundary. Its first workflow fits the exact finite three-cell
@@ -187,10 +188,17 @@ diagnostic, rather than treating a failed fit as a successful result.
 
 SciPy's stable routines are unreliable near `alpha = 1`. Both fitters therefore
 refuse, with `ValidationError` and before any likelihood evaluation, a prior
-whose support reaches `alpha < 1.10`. The default prior needs `n >= 54`; for a
-smaller sample, pass a prior with the smaller `h_max` named in the error. A
-`NumericalProbabilityError` reports a backend failure, not an unresolved grid:
-more quadrature nodes will not fix it. See "Known backend limits" in
+whose support reaches `alpha < 1.10`, that is, one with
+`2 - design.r * prior.h_max < 1.10`. With `c = 1` the default prior needs
+`n >= 54`; otherwise pass a prior with the smaller `h_max` named in the error.
+The full fit also refuses a sample whose largest standardized observation
+exceeds `1e4` scale units, where the SciPy density loses accuracy. Both limits
+are empirical cutoffs, not accuracy guarantees.
+
+A `NumericalProbabilityError` means the calculation could not be completed
+reliably. Investigate the reported input and numerical cause; increasing
+quadrature nodes may change which points are evaluated, but does not establish
+that the underlying backend problem is fixed. See "Known backend limits" in
 `docs/validation.md`.
 
 `compare_posteriors()` requires matching designs, priors, nuisance provenance,
@@ -207,7 +215,11 @@ the deterministic posterior engine, so agreement is not independent numerical
 validation, a prospective error bound, or an automatic safety decision.
 The full fit's audit record includes the raw sample's canonical float64 SHA-256,
 runtime versions, prior, nuisance provenance, and numerical controls. Raw
-observations are not retained in the result. Its log normalizer includes the
+observations are not retained in the result. The raw-sample SHA-256 identifies
+the ordered sample; it does not anonymise the data, and low-entropy samples may
+be recoverable by guessing. Audit record layouts are method-specific and
+experimental in this alpha: the full-fit and reduced-fit records carry the same
+`schema_version` but are not one common shape. Its log normalizer includes the
 raw-density scale Jacobian and cannot be compared with the grouped count
 normalizer as a Bayes factor: the two likelihoods use different observation
 spaces. Full-fit results currently expose parameter summaries and audit records;

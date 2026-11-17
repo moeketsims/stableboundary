@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import exp, isfinite, log
-from typing import ClassVar, Self
+from typing import ClassVar, Final, Self
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -17,6 +17,8 @@ from .backends import (
 )
 from .design import KnownNuisance, LocalDesign
 from .parameters import LocalCoordinates, StableParams
+
+_CANONICAL_SCIPY_S0_TYPE: Final = ScipyS0Backend
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -190,7 +192,12 @@ def exact_cell_probabilities(
     design: LocalDesign,
     backend: StableBackend | None = None,
 ) -> CellProbabilities:
-    """Evaluate exact finite S0 cell probabilities at one local point."""
+    """Evaluate exact finite S0 cell probabilities at one local point.
+
+    With the canonical SciPy backend, ``alpha < 1.10`` is refused with
+    ``ValidationError`` before any tail evaluation; see "Known backend limits"
+    in ``docs/validation.md``.
+    """
     if not isinstance(local, LocalCoordinates):
         raise ValidationError("local must be a LocalCoordinates object")
     if not isinstance(design, LocalDesign):
@@ -199,6 +206,15 @@ def exact_cell_probabilities(
         raise ValidationError("local coordinates must use the design's exact r")
     candidate: object = ScipyS0Backend() if backend is None else backend
     evaluator, metadata = validate_s0_backend(candidate)
+    if (
+        type(evaluator) is _CANONICAL_SCIPY_S0_TYPE
+        and local.alpha < _CANONICAL_SCIPY_S0_TYPE.MIN_VALIDATED_ALPHA
+    ):
+        raise ValidationError(
+            f"alpha = {local.alpha:.6g} is below the "
+            f"{_CANONICAL_SCIPY_S0_TYPE.MIN_VALIDATED_ALPHA:g} limit of the "
+            "canonical SciPy S0 backend, which is unreliable near alpha = 1"
+        )
 
     params = StableParams(
         alpha=local.alpha,

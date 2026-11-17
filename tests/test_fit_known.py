@@ -336,6 +336,66 @@ def test_alpha_guard_boundary_and_advice_are_consistent() -> None:
     )
 
 
+def test_alpha_guard_accepts_the_exact_limit_and_refuses_the_next_value() -> None:
+    design = LocalDesign.from_sample_size(64)
+    minimum = ScipyS0Backend.MIN_VALIDATED_ALPHA
+    start = (2.0 - minimum) / design.r
+    candidates = [start]
+    upward = downward = start
+    for _ in range(64):
+        upward = float(np.nextafter(upward, np.inf))
+        downward = float(np.nextafter(downward, -np.inf))
+        candidates.extend((upward, downward))
+    at_limit = [h for h in candidates if 2.0 - design.r * h == minimum]
+    below = [h for h in candidates if 2.0 - design.r * h < minimum]
+    above = [h for h in candidates if 2.0 - design.r * h > minimum]
+    assert at_limit and below and above
+    for h_max in at_limit + above:
+        _require_validated_canonical_alpha(
+            design, LocalPrior(design=design, h_max=h_max)
+        )
+    for h_max in below:
+        with pytest.raises(ValidationError, match="unreliable near alpha = 1"):
+            _require_validated_canonical_alpha(
+                design, LocalPrior(design=design, h_max=h_max)
+            )
+
+
+@pytest.mark.parametrize(
+    ("n", "c", "refused"),
+    [(53, 1.0, True), (54, 1.0, False), (54, 2.0, True), (108, 2.0, False)]
+    + [(32, 0.5, False), (26, 0.5, True)],
+)
+def test_alpha_guard_follows_r_not_sample_size_alone(
+    n: int, c: float, refused: bool
+) -> None:
+    design = LocalDesign.from_sample_size(n, c)
+    prior = LocalPrior.default(design)
+    expected = 2.0 - design.r * prior.h_max < ScipyS0Backend.MIN_VALIDATED_ALPHA
+    assert expected is refused
+    if refused:
+        with pytest.raises(ValidationError, match="larger n or smaller c"):
+            _require_validated_canonical_alpha(design, prior)
+    else:
+        _require_validated_canonical_alpha(design, prior)
+
+
+@pytest.mark.parametrize("n", [40, 200_000])
+def test_alpha_guard_advice_is_usable_for_small_and_large_designs(n: int) -> None:
+    design = LocalDesign.from_sample_size(n)
+    usable = (2.0 - ScipyS0Backend.MIN_VALIDATED_ALPHA) / design.r
+    # Here h_min already exceeds the largest usable h_max.
+    prior = LocalPrior(design=design, h_min=usable * 1.01, h_max=usable * 1.05)
+    with pytest.raises(ValidationError, match="h_min < h_max <= ") as caught:
+        _require_validated_canonical_alpha(design, prior)
+    advised = float(str(caught.value).rsplit("h_max <= ", 1)[1])
+    assert advised < prior.h_min
+    assert advised <= usable
+    _require_validated_canonical_alpha(
+        design, LocalPrior(design=design, h_min=advised / 2.0, h_max=advised)
+    )
+
+
 def test_alpha_guard_applies_only_to_the_canonical_backend() -> None:
     design = LocalDesign.from_sample_size(32)
     prior = LocalPrior.default(design)

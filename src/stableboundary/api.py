@@ -25,8 +25,9 @@ def fit_known_nuisance(
 
     A prior whose support reaches ``alpha < 1.10`` is refused with
     ``ValidationError`` before any likelihood evaluation, because the SciPy
-    backend is unreliable near ``alpha = 1``. The default prior needs
-    ``n >= 54``. See "Known backend limits" in ``docs/validation.md``.
+    backend is unreliable near ``alpha = 1``. The rule is
+    ``2 - design.r * prior.h_max >= 1.10``; with ``c = 1`` the default prior
+    needs ``n >= 54``. See "Known backend limits" in ``docs/validation.md``.
     """
     if not isinstance(design, LocalDesign):
         raise ValidationError("design must be a LocalDesign object")

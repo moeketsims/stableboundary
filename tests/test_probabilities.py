@@ -446,6 +446,27 @@ def test_exact_cells_reject_structurally_valid_s1_backend(
     assert backend.calls == []
 
 
+def test_exact_cells_refuse_canonical_backend_below_validated_alpha(
+    local_design: LocalDesign, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise AssertionError("the alpha guard must run before any SciPy evaluation")
+
+    monkeypatch.setattr(ScipyS0Backend, "_evaluate", fail)
+    minimum = ScipyS0Backend.MIN_VALIDATED_ALPHA
+    local = LocalCoordinates(r=local_design.r, h=0.95 / local_design.r, p=0.7)
+    assert local.alpha < minimum
+    with pytest.raises(ValidationError, match="unreliable near alpha = 1"):
+        exact_cell_probabilities(local, local_design)
+    with pytest.raises(ValidationError, match="unreliable near alpha = 1"):
+        exact_cell_probabilities(local, local_design, ScipyS0Backend())
+    # The limit belongs to the SciPy backend; other backends are not refused.
+    recording = RecordingBackend()
+    exact_cell_probabilities(local, local_design, recording)
+    assert [call[0] for call in recording.calls] == ["logcdf", "logsf"]
+
+
 def test_exact_cells_use_direct_log_tails_and_standardized_s0(
     local_design: LocalDesign,
 ) -> None:
