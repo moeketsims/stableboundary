@@ -30,8 +30,16 @@ interval in isolation.
 
 This alpha supports Python 3.12 through 3.14 and pins NumPy 2.5.2 and
 SciPy 1.18.1. Use a separate virtual environment if another project needs
-different versions. These pins deliberately limit the initial support claim. From a built source tree, install the
-package with:
+different versions. These pins deliberately limit the initial support claim.
+
+Install the alpha from PyPI by naming the version, because pip skips
+pre-releases by default:
+
+```console
+python -m pip install stableboundary==0.1.0a1
+```
+
+From a source checkout, install the package with:
 
 ```console
 python -m pip install .
@@ -275,6 +283,13 @@ from each installed archive.
   under the declared stable sampling model.
 - Location and scale must be independently known; same-sample plug-in
   standardization is unsupported.
+- With the SciPy backend, both fitters refuse a prior whose support reaches
+  `alpha < 1.10`. With `c = 1` the default prior therefore needs `n >= 54`; a
+  smaller `h_max` keeps a smaller sample in range.
+- The full-likelihood fit refuses a sample whose largest standardized
+  observation exceeds `1e4` scale units.
+- Both of these limits are empirical cutoffs for the SciPy backend, not
+  accuracy guarantees. See "Known backend limits" in `docs/validation.md`.
 - The default fit is a reduced, exact finite-cell posterior. A separately
   requested full-likelihood reference and observed-data posterior comparison
   are available. Independent production numerics and automatic fallback remain
