@@ -174,13 +174,24 @@ than the grouped likelihood. Work grows with the number of distinct observations
 times the number of quadrature nodes. `observation_chunk_size` bounds the number
 of distinct observations evaluated in a block; a further internal cap limits
 temporary arrays. Exactly repeated values are evaluated once with their original
-multiplicities. No rounding or binning is applied. Start with a small sample when
-exploring runtime.
+multiplicities. The package does not round or bin observations. The SciPy
+backend does round: an observation within `0.005 * alpha**(1/alpha)` scale units
+of `zeta = -beta * tan(pi * alpha / 2)` is evaluated at `zeta` (the recorded
+`piecewise_x_tol_near_zeta` setting). `docs/validation.md` gives the measured
+size of this effect. Start with a small sample when exploring runtime.
 
 Both fitters check the base and refined quadrature grids, posterior summaries,
 and design-tail predictions. A failed check raises `ConvergenceError`; increase
 `base_nodes`, `refined_nodes`, and/or `common_grid_points` as indicated by the
 diagnostic, rather than treating a failed fit as a successful result.
+
+SciPy's stable routines are unreliable near `alpha = 1`. Both fitters therefore
+refuse, with `ValidationError` and before any likelihood evaluation, a prior
+whose support reaches `alpha < 1.10`. The default prior needs `n >= 54`; for a
+smaller sample, pass a prior with the smaller `h_max` named in the error. A
+`NumericalProbabilityError` reports a backend failure, not an unresolved grid:
+more quadrature nodes will not fix it. See "Known backend limits" in
+`docs/validation.md`.
 
 `compare_posteriors()` requires matching designs, priors, nuisance provenance,
 and cell counts. Counts fully determine the reduced likelihood. It reports

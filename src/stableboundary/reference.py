@@ -45,7 +45,9 @@ def _full_log_likelihood(
     """Sum raw-observation log densities, retaining the location-scale Jacobian.
 
     Only exactly equal float64 observations are coalesced. Their multiplicities
-    multiply log densities, so this is the full IID likelihood, without binning.
+    multiply log densities, so this is the full IID likelihood: this function
+    does not bin or round. The canonical backend still applies SciPy's own
+    rounding of observations very close to zeta (``piecewise_x_tol_near_zeta``).
     Chunking bounds temporary memory even for large quadrature grids.
     """
     step = min(chunk_size, max(1, _MAX_DENSITY_VALUES // alpha.size))
@@ -245,6 +247,9 @@ def fit_full_known_nuisance(
     grows with the number of distinct observations times the quadrature grid
     size; use this as a reference calculation. Numerical failures raise rather
     than returning an unrefined posterior or switching to the grouped likelihood.
+    A prior whose support reaches ``alpha < 1.10`` is refused with
+    ``ValidationError`` before any density evaluation, because the SciPy backend
+    is unreliable near ``alpha = 1``.
     """
     if not isinstance(design, LocalDesign):
         raise ValidationError("design must be a LocalDesign object")

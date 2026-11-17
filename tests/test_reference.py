@@ -218,6 +218,16 @@ def test_full_refuses_unconverged_posterior(toy):
         )
 
 
+def test_full_refuses_prior_reaching_alpha_near_one_before_scipy(monkeypatch):
+    def fail(*args, **kwargs):
+        raise AssertionError("the alpha guard must run before any SciPy evaluation")
+
+    monkeypatch.setattr(ScipyS0Backend, "_evaluate", fail)
+    design = sb.LocalDesign.from_sample_size(40)
+    with pytest.raises(sb.ValidationError, match="unreliable near alpha = 1"):
+        sb.fit_full_known_nuisance(np.zeros(design.n), 0, 1, design)
+
+
 @pytest.fixture(scope="module")
 def real_fits():
     design = sb.LocalDesign.from_sample_size(256)

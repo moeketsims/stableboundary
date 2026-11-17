@@ -51,6 +51,10 @@ _CANONICAL_SETTINGS: Final[tuple[tuple[str, BackendSetting], ...]] = (
     ("pdf_fft_interpolation_level", 3),
     ("pdf_fft_min_points_threshold", None),
 )
+# Closer to alpha = 1 than this, SciPy's piecewise method rounds alpha to 1,
+# can fail, or returns wrong densities and tails for some inputs. The limit is
+# empirical; see "Known backend limits" in docs/validation.md.
+_MIN_VALIDATED_ALPHA: Final = 1.10
 
 
 class _ScipyStableGenerator(Protocol):
@@ -161,6 +165,9 @@ class ScipyS0Backend:
     """Guarded bootstrap backend using SciPy's piecewise Nolan method."""
 
     __slots__ = ()
+
+    #: Fits with this backend refuse priors whose support reaches below this.
+    MIN_VALIDATED_ALPHA: Final = _MIN_VALIDATED_ALPHA
 
     _metadata: Final = BackendMetadata(
         method="scipy-piecewise-s0-direct-log-tails",

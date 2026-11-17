@@ -24,6 +24,7 @@ from stableboundary.posterior import (
     _CommonGrid,
     _evaluate_grid,
     _joint_total_variation,
+    _require_validated_canonical_alpha,
     _tau_cdf,
     _tau_quantile,
     _trapezoid_weights,
@@ -301,6 +302,48 @@ def test_exact_fixed_node_grid_cannot_claim_refinement() -> None:
             LocalPrior.default(design),
             QuadratureConfig(base_nodes=8, refined_nodes=8),
         )
+
+
+def _fail_if_scipy_is_called(*args: object, **kwargs: object) -> object:
+    del args, kwargs
+    raise AssertionError("the alpha guard must run before any SciPy evaluation")
+
+
+@pytest.mark.parametrize("n", [16, 32, 44, 53])
+def test_canonical_backend_refuses_prior_reaching_alpha_near_one(
+    monkeypatch: pytest.MonkeyPatch, n: int
+) -> None:
+    monkeypatch.setattr(ScipyS0Backend, "_evaluate", _fail_if_scipy_is_called)
+    design = LocalDesign.from_sample_size(n)
+    prior = LocalPrior.default(design)
+    assert 2.0 - design.r * prior.h_max < ScipyS0Backend.MIN_VALIDATED_ALPHA
+    with pytest.raises(ValidationError, match="unreliable near alpha = 1"):
+        fit_known_nuisance(np.zeros(design.n), loc=0.0, scale=1.0, design=design)
+    with pytest.raises(ValidationError, match="unreliable near alpha = 1"):
+        compute_exact_posterior(_counts(design), design, prior)
+
+
+def test_alpha_guard_boundary_and_advice_are_consistent() -> None:
+    refused = LocalDesign.from_sample_size(53)
+    accepted = LocalDesign.from_sample_size(54)
+    with pytest.raises(ValidationError, match="h_max <= ") as caught:
+        _require_validated_canonical_alpha(refused, LocalPrior.default(refused))
+    _require_validated_canonical_alpha(accepted, LocalPrior.default(accepted))
+    # Following the advice in the message must be enough to pass the guard.
+    advised = float(str(caught.value).rsplit("h_max <= ", 1)[1])
+    _require_validated_canonical_alpha(
+        refused, LocalPrior(design=refused, h_max=advised)
+    )
+
+
+def test_alpha_guard_applies_only_to_the_canonical_backend() -> None:
+    design = LocalDesign.from_sample_size(32)
+    prior = LocalPrior.default(design)
+    assert 2.0 - design.r * prior.h_max < ScipyS0Backend.MIN_VALIDATED_ALPHA
+    posterior = compute_exact_posterior(
+        _counts(design), design, prior, backend=_AnalyticBackend()
+    )
+    assert posterior.backend_origin == "custom"
 
 
 def test_exact_posterior_rejects_structurally_valid_s1_backend() -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
-from math import isfinite
+from math import floor, isfinite
 from numbers import Integral, Real
 from platform import python_version
 from typing import Final, Literal
@@ -1487,6 +1487,26 @@ def _refinement_diagnostics(
     return diagnostics, refined_summaries
 
 
+def _require_validated_canonical_alpha(design: LocalDesign, prior: LocalPrior) -> None:
+    """Refuse priors reaching alpha values the canonical backend gets wrong.
+
+    The check depends only on the design and prior, so the outcome cannot
+    change with the quadrature node placement, and it runs before any
+    likelihood evaluation.
+    """
+    minimum = _CANONICAL_SCIPY_S0_TYPE.MIN_VALIDATED_ALPHA
+    alpha_min = 2.0 - design.r * prior.h_max
+    if alpha_min < minimum:
+        # Rounded down so that following the advice always passes this check.
+        h_limit = floor(1000.0 * (2.0 - minimum) / design.r) / 1000.0
+        raise ValidationError(
+            f"prior support reaches alpha = {alpha_min:.6g}, below the "
+            f"{minimum:g} limit of the canonical SciPy S0 backend, which is "
+            "unreliable near alpha = 1; use a larger sample size or a prior "
+            f"with h_max <= {h_limit:g}"
+        )
+
+
 def _compute_posterior(
     counts: CellCounts,
     design: LocalDesign,
@@ -1520,6 +1540,8 @@ def _compute_posterior(
         if type(evaluator) is _CANONICAL_SCIPY_S0_TYPE
         else "custom"
     )
+    if backend_origin == "canonical_scipy_s0":
+        _require_validated_canonical_alpha(design, prior)
     base = _evaluate_grid(
         counts,
         design,

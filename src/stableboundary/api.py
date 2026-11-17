@@ -21,7 +21,13 @@ def fit_known_nuisance(
     provenance: str = "caller-declared",
     quadrature: QuadratureConfig | None = None,
 ) -> KnownNuisanceFit:
-    """Fit the exact finite-cell posterior with independently known nuisance."""
+    """Fit the exact finite-cell posterior with independently known nuisance.
+
+    A prior whose support reaches ``alpha < 1.10`` is refused with
+    ``ValidationError`` before any likelihood evaluation, because the SciPy
+    backend is unreliable near ``alpha = 1``. The default prior needs
+    ``n >= 54``. See "Known backend limits" in ``docs/validation.md``.
+    """
     if not isinstance(design, LocalDesign):
         raise ValidationError("design must be a LocalDesign object")
     selected_prior = LocalPrior.default(design) if prior is None else prior

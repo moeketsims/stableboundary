@@ -11,13 +11,52 @@ The test suite checks an analytic truncated-normal posterior through the shared
 quadrature engine, raw-observation likelihood products, exact duplicate
 multiplicities, location-scale transformations including the density Jacobian,
 reflection symmetry, normalization, immutable evidence, and numerical refusal.
-Selected stable densities are checked by independent characteristic-function
-inversion. The grouped-posterior oracle uses independently implemented
-48/64-node quadrature and Fourier checks.
+Three stable densities are checked by independent characteristic-function
+inversion. All three have `alpha` between 1.90 and 1.94 and `|x| <= 2.5`, inside
+the central cell of that design. This test does not cover observations beyond
+the design threshold, heavier tails, or the limits listed below. The
+grouped-posterior oracle uses independently implemented 48/64-node quadrature
+and Fourier checks.
 
 Full and grouped fits share the production SciPy backend and posterior engine.
 Agreement between them cannot rule out a shared numerical defect. Refinement
 diagnostics are empirical convergence evidence, not rigorous error bounds.
+
+## Known backend limits
+
+Before release, the SciPy 1.18.1 piecewise method behind both fitters was
+compared with an independent characteristic-function inversion of the S0 law
+(Fourier inversion for the density, Gil-Pelaez inversion for the tails). These
+were spot checks on finite grids on one Windows AMD64 machine. They are not
+error bounds, and they are not part of the test suite. Write
+`zeta = -beta * tan(pi * alpha / 2)`.
+
+- **Alpha near 1.** For `|alpha - 1| < 0.005` SciPy evaluates the law at
+  `alpha = 1` (the recorded `piecewise_alpha_tol_near_one` setting). Just
+  outside that band, for `alpha` of about 0.9944 to 0.9950 and 1.0052 to 1.0056,
+  it returned NaN for some inputs and finite but wrong values for others. For
+  example, the log density at `x = -2`, `alpha = 1.0055`, `beta = 0.5` came back
+  as -36.41 against -3.19.
+- **Observations near zeta, alpha below 1.10.** From `alpha` of about 1.006 to
+  1.09, the log density was low by about 1 when an observation lay in a window
+  around `zeta`. The window was several scale units wide at `alpha = 1.006` and
+  under 0.01 wide at `alpha = 1.09`, and wider for larger `|beta|`.
+- **The guard.** With the SciPy backend, `fit_known_nuisance()` and
+  `fit_full_known_nuisance()` refuse a prior whose support reaches
+  `alpha < 1.10`. They raise `ValidationError` before any likelihood
+  evaluation, so the outcome does not depend on where quadrature nodes fall.
+  The default prior needs `n >= 54`. A smaller `h_max` keeps a smaller sample
+  in range. `simulate()` is not guarded and was not checked near `alpha = 1`.
+- **Observations near zeta, alpha of 1.10 or more.** SciPy evaluates an
+  observation within `0.005 * alpha**(1/alpha)` scale units of `zeta` at `zeta`
+  (the recorded `piecewise_x_tol_near_zeta` setting). At `alpha = 1.82`,
+  `beta = 0.2` this changed the log density of an affected observation by up to
+  2.7e-4. At `alpha` of 1.10, 1.11 and 1.12 with `|beta| >= 0.7`, tail
+  probabilities were also held at their value at `zeta` up to about twice that
+  distance, a log-tail error of up to 2e-3; this was no longer seen at
+  `alpha = 1.15`. Outside these windows, the density and tails agreed with the
+  independent inversion to within 1e-6 in the log at every point tested with
+  `alpha` from 1.10 to 1.99, `|beta| <= 0.999` and `|x| <= 100`.
 
 ## Reproducing the comparison examples
 
@@ -46,6 +85,10 @@ discrepancy is valid evidence against using the reduction for that case.
   summaries. All successful fits currently report `research_uncertified`.
 - `ConvergenceError` means no accepted fit was returned. Increase numerical
   resolution and investigate; do not silently discard failed cases in studies.
+- `NumericalProbabilityError` means the backend failed or returned an invalid
+  value. More quadrature nodes will not fix it. `ValidationError` naming the
+  `alpha` limit means the prior reaches the region described under "Known
+  backend limits".
 - The comparison tolerance controls grid-refinement change, not the acceptable
   difference between the statistical models. No automatic safety decision exists.
 - The compact prior excludes the exact Gaussian and one-sided shape boundaries.

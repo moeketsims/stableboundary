@@ -11,6 +11,8 @@ near the Gaussian boundary, with independently known location and scale.
 - Continuous posterior summaries, reduced-model predictive calculations,
   immutable numerical evidence, and JSON-compatible audit records.
 - Numerical refinement checks that refuse unresolved calculations.
+- Fits with the SciPy backend refuse priors whose support reaches
+  `alpha < 1.10`, where SciPy's stable routines are unreliable near `alpha = 1`.
 - Python 3.12 through 3.14, NumPy 2.5.2, and SciPy 1.18.1 support scope.
 
 All results remain `research_uncertified`. This release does not implement
