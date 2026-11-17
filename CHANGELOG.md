@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0a1
+## 0.1.0a1 (2026-11-17)
 
 First research alpha for Bayesian shape inference in univariate stable models
 near the Gaussian boundary, with independently known location and scale.
