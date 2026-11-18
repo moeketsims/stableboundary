@@ -371,6 +371,13 @@ class ScipyS0Backend:
         if not isinstance(random_state, Generator):
             raise ValidationError("random_state must be a numpy.random.Generator")
 
+        # S1 sampling followed by the S0 location shift loses precision near
+        # one for skewed laws. Exactly one uses a separate SciPy formula.
+        if beta_value != 0 and 0 < abs(alpha_value - 1.0) < 1e-4:
+            raise ValidationError(
+                "skewed S0 simulation is unresolved for 0 < |alpha - 1| < 1e-4"
+            )
+
         context = (
             f"alpha={alpha_value!r}, beta={beta_value!r}, loc={loc_value!r}, "
             f"scale={scale_value!r}, size={int(size)}"

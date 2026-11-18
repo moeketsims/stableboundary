@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0a2 (unreleased)
+
+- Guard skewed simulation very close to alpha = 1 and verify predictive tails
+  independently before returning exceedance probabilities or expected counts.
+- Require enough draws in each batch to resolve a requested predictive quantile.
+- Report zero signed-tail events in exact fits and retain the measured interval
+  contraction. The signed-Poisson benchmark retains its own limiting interpretation.
+- Include both full-fit attempts in the README timing figure.
+
 ## 0.1.0a1 (2026-11-17)
 
 First research alpha for Bayesian shape inference in univariate stable models

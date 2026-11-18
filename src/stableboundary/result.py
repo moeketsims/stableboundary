@@ -32,11 +32,40 @@ _MAX_PREDICTIVE_DRAWS: Final = 1_000_000
 _PREDICTIVE_BATCHES: Final = 8
 
 EvidenceStatus = Literal[
-    "prior_dominated",
+    "no_tail_events",
     "one_sided_evidence",
     "two_sided_evidence",
 ]
-PrecisionStatus = Literal["unidentified", "not_assessed"]
+PrecisionStatus = Literal["not_assessed"]
+
+
+def _fourier_mixture_tails(
+    z_minus: float,
+    z_plus: float,
+    alpha: NDArray[np.float64],
+    beta: NDArray[np.float64],
+    mass: NDArray[np.float64],
+    order: int,
+) -> NDArray[np.float64]:
+    """Gil-Pelaez inversion at the retained posterior nodes, using t = u**4."""
+    nodes, weights = roots_legendre(order)
+    # At the upper endpoint exp(-t**alpha) <= exp(-48) over this grid.
+    upper_u = 48.0 ** (0.25 / float(np.min(alpha)))
+    u = (1 + nodes) * (upper_u / 2)
+    t = u**4
+    measure = weights * (upper_u / 2) * 4 / (np.pi * u)
+    result = np.zeros(2)
+    a, b, m = alpha.ravel(), beta.ravel(), mass.ravel()
+    for start in range(0, m.size, 128):
+        block = slice(start, start + 128)
+        shape = a[block, None]
+        power = t**shape
+        phase = b[block, None] * np.tan(np.pi * shape / 2) * (power - t)
+        amplitude = np.exp(-power) * measure
+        for side, (sign, z) in enumerate(((-1, z_minus), (1, z_plus))):
+            tails = 0.5 + np.sum(amplitude * np.sin(sign * phase - z * t), axis=1)
+            result[side] += m[block] @ tails
+    return result
 
 
 def _real_float(name: str, value: float) -> float:
@@ -349,8 +378,8 @@ class KnownNuisanceFit:
         )
         if self.counts.n_minus + self.counts.n_plus == 0:
             return base + (
-                "No signed-tail events: beta and p are prior-dominated and "
-                "unidentified.",
+                "No signed-tail events. The central count can inform the magnitude "
+                "of skew. The likelihood is symmetric in its sign.",
             )
         if self.counts.n_minus == 0 or self.counts.n_plus == 0:
             return base + (
@@ -390,8 +419,8 @@ class KnownNuisanceFit:
     def identification(self) -> IdentificationDiagnostics:
         total_tail = self.counts.n_minus + self.counts.n_plus
         if total_tail == 0:
-            evidence: EvidenceStatus = "prior_dominated"
-            precision: PrecisionStatus = "unidentified"
+            evidence: EvidenceStatus = "no_tail_events"
+            precision: PrecisionStatus = "not_assessed"
         elif self.counts.n_minus == 0 or self.counts.n_plus == 0:
             evidence = "one_sided_evidence"
             precision = "not_assessed"
@@ -527,6 +556,13 @@ class KnownNuisanceFit:
         alpha = self.posterior.values("alpha")
         beta = self.posterior.values("beta")
         backend = self.posterior.prediction_backend()
+        # Reflect the lower event: P(X < -T) = P(-Z > (T + loc)/scale).
+        z_minus = (raw_threshold + self.nuisance.loc) / self.nuisance.scale
+        z_plus = (raw_threshold - self.nuisance.loc) / self.nuisance.scale
+        if max(abs(z_minus), abs(z_plus)) > 32:
+            raise NumericalProbabilityError(
+                "predictive tail verification supports standardized cutoffs within 32"
+            )
         log_negative = np.asarray(
             backend.logcdf(
                 -raw_threshold,
@@ -560,6 +596,22 @@ class KnownNuisanceFit:
             )
         negative = float(np.sum(self.posterior.mass * np.exp(log_negative)))
         positive = float(np.sum(self.posterior.mass * np.exp(log_positive)))
+        reported = np.array([negative, positive])
+        coarse, fine = (
+            _fourier_mixture_tails(z_minus, z_plus, alpha, beta, self.posterior.mass, n)
+            for n in (256, 512)
+        )
+        # Subtracting a half in Fourier inversion limits absolute resolution.
+        # Refuse when roundoff, refinement or cross-method agreement is inadequate.
+        if (
+            not np.all(np.isfinite(fine))
+            or np.any(fine <= 1e-9)
+            or np.any(np.abs(coarse - fine) > 1e-4 * fine)
+            or np.any(np.abs(reported - fine) > 1e-3 * fine)
+        ):
+            raise NumericalProbabilityError(
+                "predictive tail probability unresolved by independent Fourier check"
+            )
         return SignedTailPrediction(
             threshold=raw_threshold,
             negative=negative,
@@ -639,6 +691,14 @@ class KnownNuisanceFit:
         draw_count = _positive_integer("draws", draws, maximum=_MAX_PREDICTIVE_DRAWS)
         if draw_count < _PREDICTIVE_BATCHES:
             raise ValidationError("draws must provide at least one draw per batch")
+        # The smallest batch must resolve the nearer tail. Five expected
+        # observations bound its probability of missing that tail by exp(-5).
+        min_tail_probability = 5 / (draw_count // _PREDICTIVE_BATCHES)
+        if not min_tail_probability <= requested <= 1 - min_tail_probability:
+            raise ValidationError(
+                "insufficient tail resolution: increase draws to provide at least "
+                "five expected observations in the nearer tail per batch"
+            )
         sample = self.posterior_predictive(draw_count, seed=seed)
         batches = np.array_split(sample.values, _PREDICTIVE_BATCHES)
         batch_quantiles = np.array(

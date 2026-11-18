@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stableboundary"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "Auditable Bayesian inference for alpha-stable laws near the Gaussian boundary"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"

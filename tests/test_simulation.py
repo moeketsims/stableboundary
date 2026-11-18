@@ -83,3 +83,28 @@ def test_only_planned_simulation_and_cell_types_join_public_facade() -> None:
     assert {"simulate", "CellCounts", "CellProbabilities"} <= set(sb.__all__)
     assert "exact_cell_probabilities" not in sb.__all__
     assert "ScipyS0Backend" not in sb.__all__
+
+
+@pytest.mark.parametrize("distance", [1e-8, -1e-8, 1e-12, -1e-12, 9e-5, -9e-5])
+@pytest.mark.parametrize("beta", [0.9, -0.9])
+def test_near_one_skewed_simulation_refuses_before_using_rng(distance, beta):
+    rng = np.random.default_rng(412)
+    before = rng.bit_generator.state
+    with pytest.raises(sb.ValidationError, match="skewed S0 simulation"):
+        sb.simulate(sb.StableParams(1 + distance, beta), 100, rng)
+    assert rng.bit_generator.state == before
+
+
+@pytest.mark.parametrize(
+    "alpha,beta", [(1, 0.9), (1 + 1.01e-4, 0.9), (1 - 1.01e-4, -0.9), (1 + 1e-12, 0)]
+)
+def test_near_one_supported_draws_match_characteristic_function(alpha, beta):
+    sample = sb.simulate(sb.StableParams(alpha, beta), 100_000, 123)
+    for t in (0.5, 1.0, 2.0):
+        phase = (
+            -2 / np.pi * t * np.log(t)
+            if alpha == 1
+            else np.tan(np.pi * alpha / 2) * t * np.expm1((alpha - 1) * np.log(t))
+        )
+        expected = np.exp(-(t**alpha) + 1j * beta * phase)
+        assert abs(np.exp(1j * t * sample).mean() - expected) < 0.015

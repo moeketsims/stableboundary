@@ -52,7 +52,7 @@ def _package_version() -> str:
     try:
         return version("stableboundary")
     except PackageNotFoundError:  # pragma: no cover - source-tree fallback
-        return "0.1.0a1"
+        return "0.1.0a2"
 
 
 @dataclass(frozen=True, slots=True)

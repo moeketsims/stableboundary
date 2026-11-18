@@ -60,7 +60,11 @@ Write `zeta = -beta * tan(pi * alpha / 2)`.
   empirical property of this backend. It is not a statement that the model
   excludes smaller `alpha`, and it is not a certificate of accuracy above 1.10.
 - **Simulation.** `simulate()` draws with SciPy's random generator, not with
-  the density or tail routines, and is not guarded. For `alpha` in 0.97, 0.9945,
+  the density or tail routines. Version 0.1.0a2 refuses skewed draws when
+  0 < |alpha - 1| < 0.0001. At alpha = 1.00000001 and beta = 0.9, the
+  empirical characteristic function at unit frequency in 100,000 draws
+  was 0.1045 + 0.2658i against the exact exp(-1). Exactly alpha = 1 and
+  symmetric draws use distinct cases and remain available. For `alpha` in 0.97, 0.9945,
   0.999, 1.0, 1.001, 1.0055, 1.01, 1.05 and 1.10 and `beta` in 0.5 and -0.9, the
   empirical distribution of 200000 draws differed from the independent
   distribution function by 0.0013 to 0.0018 at most over 11 points. Sampling
@@ -176,3 +180,25 @@ These fit-only timings exclude simulation and the posterior comparison. Other
 verification processes were running on the same machine, so the timings are
 illustrative rather than controlled benchmarks. There is no automatic method
 selection or fallback to time. The three selected seeds are reported in full.
+
+## Predictive checks in 0.1.0a2
+
+For each signed raw threshold, transform to the standardized scale including
+location and reflection. Integrate the S0 characteristic function against the
+retained posterior masses with 256 and 512 frequency nodes. The alpha accepts
+a prediction when both standardized cutoff magnitudes are at most 32, both
+Fourier probabilities exceed 1e-9, the two integrations agree within 1e-4
+relative, and the SciPy mixture agrees within 1e-3 relative. These are
+computational limits for this implementation and empirical checks of the tail
+evaluation at the fitted posterior nodes. They do not bound error in posterior
+quadrature or establish a uniform relative-error theorem.
+
+For predictive quantiles the smallest of eight batches must have at least five
+expected draws in the nearer tail. With tail probability q and batch size m,
+the probability of seeing no draw in that tail is (1-q)^m, at most exp(-5)
+when mq >= 5. This is a resolution screen. The batch standard error remains
+a Monte Carlo estimate.
+
+With zero signed-tail observations, the exact likelihood is the central-cell
+probability raised to n. It is symmetric under reversal of beta and can vary
+with its magnitude. The exact fit reports no_tail_events and not_assessed.

@@ -3105,11 +3105,9 @@ def _validate_example(
         if validated_counts["n_minus"] and validated_counts["n_plus"]
         else "one_sided_evidence"
         if validated_counts["n_minus"] or validated_counts["n_plus"]
-        else "prior_dominated"
+        else "no_tail_events"
     )
-    expected_precision = (
-        "unidentified" if expected_evidence == "prior_dominated" else "not_assessed"
-    )
+    expected_precision = "not_assessed"
     if (
         identification["evidence_status"] != expected_evidence
         or identification["precision_status"] != expected_precision
