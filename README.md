@@ -1,6 +1,6 @@
 # stableboundary
 
-**0.1.0a1: research alpha.** APIs may change before a stable release.
+**0.1.0a2 research alpha candidate.** APIs may change before a stable release.
 See the [release notes](https://github.com/moeketsims/stableboundary/blob/main/CHANGELOG.md)
 and the [validation scope](https://github.com/moeketsims/stableboundary/blob/main/docs/validation.md).
 
@@ -12,7 +12,7 @@ All public parameters use Nolan's continuous `S0` parameterization.
 ## At a glance
 
 One simulated sample of 64 observations (seed `20261117`, true `alpha = 1.70`,
-`beta = 0.30`), fitted with this release. It is one illustrative example, not
+`beta = 0.30`), fitted with version 0.1.0a1. It is one illustrative example, not
 evidence about the method in general. The data and scripts are in
 [`figures/`](https://github.com/moeketsims/stableboundary/tree/main/figures).
 
@@ -43,8 +43,8 @@ The posterior from those counts, computed in under two seconds: tail index mean
 
 The same sample fitted from every observation with `fit_full_known_nuisance()`,
 and the two posteriors compared with `compare_posteriors()`: total variation
-distance 0.15. Timings in the figure are from one Windows laptop and are not
-benchmarks.
+distance 0.15. On the recorded laptop the full fit took 13.6 minutes across both
+attempts, including the first refinement refusal.
 
 ## Scientific scope
 
@@ -63,18 +63,18 @@ be weakly or not identified when signed-tail events are scarce; inspect the
 structured identification diagnostics and warnings rather than reading a beta
 interval in isolation.
 
+Skewed simulation is refused for nonzero distances below 0.0001 from alpha = 1.
+Exactly alpha = 1 uses a separate sampling formula. Predictive exceedance
+probabilities require agreement with independent Fourier inversion at the
+requested threshold. Predictive quantiles require five expected observations
+in the nearer tail of each of eight batches. See the validation notes for the
+numerical limits and their interpretation.
+
 ## Installation
 
 This alpha supports Python 3.12 through 3.14 and pins NumPy 2.5.2 and
 SciPy 1.18.1. Use a separate virtual environment if another project needs
 different versions. These pins deliberately limit the initial support claim.
-
-Install the alpha from PyPI by naming the version, because pip skips
-pre-releases by default:
-
-```console
-python -m pip install stableboundary==0.1.0a1
-```
 
 From a source checkout, install the package with:
 

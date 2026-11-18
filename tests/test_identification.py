@@ -70,7 +70,7 @@ def _fit(
 @pytest.mark.parametrize(
     ("negative", "positive", "evidence", "precision"),
     [
-        (0, 0, "prior_dominated", "unidentified"),
+        (0, 0, "no_tail_events", "not_assessed"),
         (0, 2, "one_sided_evidence", "not_assessed"),
         (2, 0, "one_sided_evidence", "not_assessed"),
         (1, 1, "two_sided_evidence", "not_assessed"),

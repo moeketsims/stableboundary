@@ -14,6 +14,8 @@ from stableboundary import (
     CredibleInterval,
     InfiniteVarianceError,
     LocalDesign,
+    LocalPrior,
+    NumericalProbabilityError,
     QuadratureConfig,
     ValidationError,
     fit_known_nuisance,
@@ -171,11 +173,11 @@ def test_seeded_prediction_and_quantile_mc_metadata_are_reproducible(
     assert not first.values.flags.writeable
     with pytest.raises(ValueError, match="WRITEABLE flag"):
         first.values.setflags(write=True)
-    estimate = fit.predictive_quantile(0.9, draws=80, seed=17)
-    repeated = fit.predictive_quantile(0.9, draws=80, seed=17)
+    estimate = fit.predictive_quantile(0.9, draws=400, seed=17)
+    repeated = fit.predictive_quantile(0.9, draws=400, seed=17)
     assert estimate == repeated
     assert estimate.probability == 0.9
-    assert estimate.draw_count == 80
+    assert estimate.draw_count == 400
     assert estimate.seed == 17
     assert estimate.bit_generator == "PCG64"
     assert estimate.batches == 8
@@ -185,3 +187,32 @@ def test_seeded_prediction_and_quantile_mc_metadata_are_reproducible(
 def test_predictive_variance_refuses_sub_gaussian_boundary_support(fit: object) -> None:
     with pytest.raises(InfiniteVarianceError, match="alpha < 2"):
         fit.predictive_variance()
+
+
+@pytest.mark.parametrize("probability", [0.00001, 0.99999, 0.0000001, 0.9999999])
+def test_empirical_quantile_refuses_unresolved_tails(fit, probability):
+    with pytest.raises(ValidationError, match="insufficient tail resolution"):
+        fit.predictive_quantile(probability, draws=8000, seed=123)
+
+
+def test_finite_but_inaccurate_predictive_tail_is_refused():
+    design = LocalDesign.from_sample_size(256)
+    prior = LocalPrior(
+        design, (2 - 1.999501) / design.r, (2 - 1.999499) / design.r, 0.4999, 0.5001
+    )
+    fit = fit_known_nuisance(np.zeros(256), 0, 1, design, prior)
+    with pytest.raises(NumericalProbabilityError, match="Fourier check"):
+        fit.tail_probabilities(28.5)
+    with pytest.raises(NumericalProbabilityError, match="Fourier check"):
+        fit.expected_exceedance_counts(1_000_000, 28.5)
+
+
+def test_tail_verification_accounts_for_location_scale_and_skew():
+    design = LocalDesign.from_sample_size(64)
+    data = np.zeros(64)
+    data[:4] = 5
+    fit = fit_known_nuisance(3 + 2 * data, 3, 2, design)
+    pred = fit.tail_probabilities(2)
+    assert pred.positive > 0.5 > pred.negative
+    with pytest.raises(NumericalProbabilityError, match="standardized cutoffs"):
+        fit.tail_probabilities(66)

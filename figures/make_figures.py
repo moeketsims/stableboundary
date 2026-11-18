@@ -262,7 +262,7 @@ def figure_posterior():
     measure = np.multiply.outer(trapezoid_weights(alpha), trapezoid_weights(beta))
     truth = meta["truth"]
     summary = meta["reduced"]["summaries"]
-    seconds = meta["reduced"]["attempts"][-1]["seconds"]
+    seconds = sum(attempt["seconds"] for attempt in meta["reduced"]["attempts"])
     counts = tuple(meta["counts"])
 
     fig = canvas(
@@ -393,8 +393,8 @@ def figure_comparison():
     w_alpha, w_beta = trapezoid_weights(alpha), trapezoid_weights(beta)
     truth = meta["truth"]
     tv = full_meta["comparison"]["total_variation"]
-    full_seconds = full_meta["full"]["attempts"][-1]["seconds"]
-    reduced_seconds = meta["reduced"]["attempts"][-1]["seconds"]
+    full_seconds = sum(attempt["seconds"] for attempt in full_meta["full"]["attempts"])
+    reduced_seconds = sum(attempt["seconds"] for attempt in meta["reduced"]["attempts"])
 
     fig = canvas(
         "What does the three-count shortcut lose?",
